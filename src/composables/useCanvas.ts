@@ -47,9 +47,14 @@ export function useCanvas(canvasRef: Ref<HTMLCanvasElement | null>) {
     const pad = 0.06;
     const w = Math.max(b.maxX - b.minX, 1e-6);
     const h = Math.max(b.maxY - b.minY, 1e-6);
-    const scale = Math.min((c.width * (1 - 2 * pad)) / w, (c.height * (1 - 2 * pad)) / h);
-    const offX = (c.width - w * scale) / 2;
-    const offY = (c.height - h * scale) / 2;
+    const dpr = window.devicePixelRatio || 1;
+    // Fit the writing to the canvas, but never magnify beyond maxScale — so a
+    // little writing stays a natural size instead of being blown up to fill the
+    // pad. Anchored top-left so it grows down-and-right like writing on paper.
+    const fitScale = Math.min((c.width * (1 - 2 * pad)) / w, (c.height * (1 - 2 * pad)) / h);
+    const scale = Math.min(fitScale, settings.canvas.maxScale * dpr);
+    const offX = c.width * pad;
+    const offY = c.height * pad;
     return { px: offX + (d.x - b.minX) * scale, py: offY + (d.y - b.minY) * scale };
   }
 

@@ -10,7 +10,9 @@ function getClient(): Anthropic {
     if (!apiKey) {
       throw new Error('Missing VITE_ANTHROPIC_API_KEY. Copy .env.example to .env and add your key.');
     }
-    client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+    // Bound each request so a stalled call can't freeze the feedback loop
+    // (the default SDK timeout is 10 minutes).
+    client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, timeout: 30000, maxRetries: 1 });
   }
   return client;
 }
@@ -90,7 +92,7 @@ export function useFeedback() {
 
   /** Commit a verdict to the page's session memory (kept distinct). */
   function recordVerdict(text: string): void {
-    if (!text) return;
+    if (!text || isQuiet(text)) return;
     const key = normalize(text);
     if (!history.some((h) => normalize(h) === key)) {
       history.push(text);
@@ -100,6 +102,12 @@ export function useFeedback() {
 
   function isCorrect(text: string): boolean {
     return /^\s*correct\b/i.test(text);
+  }
+
+  // "OK" = correct so far / nothing to report yet. Produces no audio and is not
+  // recorded — keeps the tool silent while the learner is progressing correctly.
+  function isQuiet(text: string): boolean {
+    return /^\s*ok[.!]?\s*$/i.test(text);
   }
 
   // Identity used to suppress replayed audio. A "Step N: ..." correction keys on
@@ -163,7 +171,7 @@ export function useFeedback() {
    * Returns true if it actually played.
    */
   function deliver(text: string, mode: Mode): boolean {
-    if (!text) return false;
+    if (!text || isQuiet(text)) return false;
     if (lastDelivered && deliveryKey(text) === deliveryKey(lastDelivered)) return false;
     lastDelivered = text;
     if (mode.feedbackStyle === 'chime' || mode.feedbackStyle === 'both') {
@@ -184,5 +192,5 @@ export function useFeedback() {
     }
   }
 
-  return { getFeedback, recordVerdict, deliver, resetSession, speak, playChime, isCorrect };
+  return { getFeedback, recordVerdict, deliver, resetSession, speak, playChime, isCorrect, isQuiet };
 }

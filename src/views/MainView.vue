@@ -58,7 +58,7 @@ async function runFeedback() {
       return;
     }
     feedback.recordVerdict(text);
-    lastFeedback.value = text;
+    lastFeedback.value = feedback.isQuiet(text) ? 'Looks good so far…' : text;
     feedback.deliver(text, activeMode.value);
     status.value = '';
   } catch (err: any) {

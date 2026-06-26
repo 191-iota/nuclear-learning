@@ -2,7 +2,8 @@
   "canvas": {
     "strokeColor": "#1a1a1a",
     "pressureMultiplier": 2.5,
-    "backgroundColor": "#ffffff"
+    "backgroundColor": "#ffffff",
+    "maxScale": 14
   },
   "audio": {
     "voiceLang": "en-US",
