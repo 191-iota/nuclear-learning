@@ -379,3 +379,64 @@ label {
   font-family: var(--mono);
   cursor: pointer;
 }
+
+/* ---- collapsible config ---- */
+
+.config-wrap {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+details.card {
+  padding: 0;
+  margin-bottom: 0.6rem;
+}
+
+details.card > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  border-radius: var(--radius);
+}
+
+details.card > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.card > summary::before {
+  content: '▸';
+  color: var(--muted);
+  font-size: 0.7rem;
+  transition: transform 0.12s ease;
+}
+
+details.card[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details.card > summary:hover {
+  background: var(--panel-2);
+}
+
+details.card[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.summary-label {
+  font-weight: 600;
+}
+
+.summary-meta {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.config-body {
+  padding: 0.9rem;
+}
