@@ -3,7 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
     <title>nuclear-learning</title>
+    <script>
+      // web_pen_sdk's bundled deps (firebase, jszip) touch the Node globals
+      // `global` and `process` at load time. Define them here in a classic inline
+      // script so they exist BEFORE any module — app code or optimized dependency
+      // chunk — is evaluated. (A module-level polyfill is not guaranteed to run
+      // before Vite's pre-bundled dependency chunk, hence this lives in <head>.)
+      window.global = window.global || window;
+      window.process = window.process || { env: {} };
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
