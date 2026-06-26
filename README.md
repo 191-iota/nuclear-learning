@@ -3,7 +3,7 @@
 Real-time feedback for handwritten work. You write on paper with a Neo Smartpen, the strokes stream into the browser over Bluetooth, and a moment after you pause the page is sent to Claude, which reads it and tells you — spoken aloud or with a chime — whether it found a mistake. The point is a tight write-check-correct loop: you fix the error yourself from a one-line hint instead of being shown the answer.
 
 <p align="center">
-  <img src="docs/pipeline.svg" alt="Neo Smartpen to canvas to Claude vision to voice and chime" width="760">
+  <img src="docs/demo.png" alt="the app connected to a Neo Smartpen, a quadratic problem on the pad" width="840">
 </p>
 
 <p align="center">
@@ -17,7 +17,17 @@ Real-time feedback for handwritten work. You write on paper with a Neo Smartpen,
 
 The pen streams (x, y, pressure) points over Web Bluetooth. The app draws them onto a canvas, fitting the page coordinates to the drawing area as it goes. When you pause for a beat — a per-mode debounce — the canvas is exported to a PNG and sent to the Claude API as a vision message under the active mode's system prompt. There is no separate OCR step; Claude reads the ink directly.
 
-It stays quiet while you are working correctly. Only an actual mistake (a one-line spoken hint) or a finished, correct result (a single chime) interrupts you. The model verifies the step in a brief internal reasoning pass before it judges, so it errs toward silence rather than crying wolf.
+<p align="center">
+  <img src="docs/pipeline.svg" alt="Neo Smartpen to canvas to Claude vision to voice and chime" width="720">
+</p>
+
+It stays quiet while you are working correctly. Only an actual mistake (a one-line spoken hint) or a finished, correct result (a single chime) interrupts you. The model solves the problem itself and verifies the answer before judging, so it errs toward silence rather than crying wolf.
+
+<p align="center">
+  <img src="docs/checked.png" alt="a handwritten quadratic solution the app has marked CORRECT" width="660">
+  <br>
+  <sub>a finished solution, checked</sub>
+</p>
 
 ## Modes
 
