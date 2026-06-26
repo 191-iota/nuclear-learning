@@ -7,7 +7,7 @@ Real-time feedback for handwritten work. You write on paper with a Neo Smartpen,
 <p align="center">
   <img src="docs/demo.png" alt="the app: a fresh problem up top and a self-corrected solution below" width="860">
   <br>
-  <sub>a fresh problem up top, and below it a self-corrected solution — the app follows your own corrections: the "falsch" mark, the arrow, the redo</sub>
+  <sub>a fresh problem up top, a worked solution below — the app reads your own corrections (the "falsch" mark, the arrow, the redo) and shows its hint along the bottom</sub>
 </p>
 
 <p align="center">
