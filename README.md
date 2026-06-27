@@ -59,17 +59,31 @@ The app is three tabs. The pad is where you work: connect the pen, choose a mode
   <img src="docs/ui-pad.png" alt="the pad tab: a thin toolbar over a blank writing area" width="860">
 </p>
 
-Usage shows what the checking costs. Every scan's token use is logged and drawn per page, split into the cheap part, the cropped image and the prompt, and the pricier part, the model's reasoning and the one-line verdict, so you can see where the spend goes and watch a model or effort change move it. There is a dark theme too, shown here.
-
-<p align="center">
-  <img src="docs/ui-usage.png" alt="the usage tab: per-page cost bars split into input and output" width="860">
-</p>
+Usage logs every scan's token cost and draws it per page, so you can watch a model or setting change move the number live, in a dark theme if you like. What a real run actually costs is below.
 
 Presets is where the modes live. A mode's prompt, debounce, feedback style, and whether it caches a solved answer are all editable in place, with the engine settings, model, effort, image size, and prices, folded into the panel at the top. The defaults still come from `config/modes.json` and `config/settings.json`; this just edits them without a reload.
 
 <p align="center">
   <img src="docs/ui-presets.png" alt="the presets tab: a math preset expanded for editing" width="860">
 </p>
+
+## What it costs
+
+A page is scanned many times as you write, so the natural question is what that costs. To find out I played a deliberately clumsy student: a messy page, worked out in pieces and left to re-scan again and again as it came together.
+
+<p align="center">
+  <img src="docs/clumsy-run.png" alt="a clumsy, hand-worked reflection problem" width="380">
+</p>
+
+Nine scans of that page came to about nine cents.
+
+<p align="center">
+  <img src="docs/cost.png" alt="usage for the page: 9 scans, 19.5k input and 796 output tokens, $0.089" width="300">
+</p>
+
+That holds because the work is split across models by how hard each part is. The first scan that can read a complete problem is solved once, in full, by the strong model, and the worked answer is kept as a short checklist. Every scan after that is only a comparison against that checklist, is the work so far still on track, so it runs on a cheaper, faster model. The moment that cheap pass thinks the answer is finished, the strong model is brought back for one last look to confirm the result before it chimes; if it disagrees, the cheap model is dropped for the rest of that problem. The expensive model runs only at the two moments that matter, working the problem out and signing off the result, and the cheap one carries the repetitive middle.
+
+Two things keep the scan count down. A scan only fires once enough new ink has arrived, so pausing to think spends nothing, and once a problem is solved it is never solved again. Most of what is left is input, the cropped image and the prompt re-sent on each scan, so a smaller image or fewer scans move the number more than anything on the output side.
 
 ## Staying coherent across a page
 
@@ -97,7 +111,7 @@ Everything tunable lives in `config/settings.json`, and can also be changed live
 
 | Setting | What it does |
 |---|---|
-| `api.model` | `claude-opus-4-8` by default for accuracy; switch to `claude-sonnet-4-6` for faster, lighter checks |
+| `api.solveModel` / `verifyModel` / `confirmModel` | the per-role models: a strong model solves and confirms, a cheaper one runs the routine checks |
 | `api.maxTokens` | room for the model's reasoning pass plus the one-line verdict |
 | `canvas.maxScale` | zoom cap, higher renders your writing bigger and lower renders it smaller |
 | `canvas.pressureMultiplier` | how much stroke width responds to pen pressure |
