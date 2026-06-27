@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 200" font-family="'IBM Plex Sans', system-ui, -apple-system, sans-serif">
+  <rect x="0" y="0" width="880" height="200" rx="14" fill="#1a1916"/>
+
+  <!-- nodes -->
+  <rect x="24"  y="92" width="160" height="48" rx="10" fill="#232220" stroke="#34322c" stroke-width="1.5"/>
+  <text x="104" y="121" text-anchor="middle" font-size="16" fill="#f0efe9">Neo Smartpen</text>
+
+  <rect x="248" y="92" width="160" height="48" rx="10" fill="#232220" stroke="#34322c" stroke-width="1.5"/>
+  <text x="328" y="121" text-anchor="middle" font-size="16" fill="#f0efe9">Canvas</text>
+
+  <rect x="472" y="92" width="160" height="48" rx="10" fill="#232220" stroke="#f0efe9" stroke-width="1.8"/>
+  <text x="552" y="121" text-anchor="middle" font-size="16" fill="#f0efe9">Claude · vision</text>
+
+  <rect x="696" y="92" width="160" height="48" rx="10" fill="#232220" stroke="#34322c" stroke-width="1.5"/>
+  <text x="776" y="121" text-anchor="middle" font-size="16" fill="#f0efe9">Voice · chime</text>
+
+  <!-- arrows -->
+  <line x1="184" y1="116" x2="248" y2="116" stroke="#565049" stroke-width="1.5"/>
+  <path d="M248,116 L240,112 L240,120 Z" fill="#565049"/>
+  <text x="216" y="84" text-anchor="middle" font-size="11" fill="#9b988e" font-family="'IBM Plex Mono', monospace">Bluetooth</text>
+
+  <line x1="408" y1="116" x2="472" y2="116" stroke="#565049" stroke-width="1.5"/>
+  <path d="M472,116 L464,112 L464,120 Z" fill="#565049"/>
+  <text x="440" y="84" text-anchor="middle" font-size="11" fill="#9b988e" font-family="'IBM Plex Mono', monospace">debounce · PNG</text>
+
+  <line x1="632" y1="116" x2="696" y2="116" stroke="#565049" stroke-width="1.5"/>
+  <path d="M696,116 L688,112 L688,120 Z" fill="#565049"/>
+  <text x="664" y="84" text-anchor="middle" font-size="11" fill="#9b988e" font-family="'IBM Plex Mono', monospace">verdict</text>
+
+  <!-- caption -->
+  <text x="440" y="174" text-anchor="middle" font-size="13" fill="#9b988e">write on paper · get the correction in your ear</text>
+</svg>

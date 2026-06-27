@@ -1,14 +1,25 @@
 <p align="center">
-  <img src="docs/app.png" alt="the app: a problem on the pad with the app's hint in the status bar" width="880">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.png">
+    <img alt="nuclear-learning — write on paper, read and checked the moment you pause" src="docs/hero-light.png" width="880">
+  </picture>
 </p>
 
-# nuclear-learning
-
-![Vue 3](https://img.shields.io/badge/Vue-3-1a1a1a?style=flat-square) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-1a1a1a?style=flat-square) ![Claude vision](https://img.shields.io/badge/Claude-vision-cc785c?style=flat-square) ![Web Bluetooth](https://img.shields.io/badge/Web%20Bluetooth-Chrome%20%2F%20Edge-1a1a1a?style=flat-square)
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-1a1a1a?style=flat-square" alt="MIT license">&nbsp;
+  <img src="https://img.shields.io/badge/Vue-3-1a1a1a?style=flat-square" alt="Vue 3">&nbsp;
+  <img src="https://img.shields.io/badge/TypeScript-strict-1a1a1a?style=flat-square" alt="TypeScript strict">&nbsp;
+  <img src="https://img.shields.io/badge/Claude-vision-cc785c?style=flat-square" alt="Claude vision">&nbsp;
+  <img src="https://img.shields.io/badge/Web%20Bluetooth-Chrome%20%2F%20Edge-1a1a1a?style=flat-square" alt="Web Bluetooth, Chrome or Edge">
+</p>
 
 > You antisocial folks will particularly like this one
 
 Real-time feedback for handwritten work. You write on paper with a Neo Smartpen, the strokes stream into the browser over Bluetooth, and a moment after you pause the page goes to Claude, which reads it and tells you, spoken aloud or with a chime, whether it found a mistake. It is a tight write, check, correct loop: you fix the error yourself from a one-line hint instead of being shown the answer.
+
+<p align="center">
+  <img src="docs/app.png" alt="the app: a problem on the pad with the app's hint in the status bar" width="880">
+</p>
 
 The same work starts on real Ncode paper, written with the Neo pen.
 
@@ -21,7 +32,10 @@ The same work starts on real Ncode paper, written with the Neo pen.
 The pen streams (x, y, pressure) points over Web Bluetooth. The app draws them onto a canvas, fitting the page coordinates to the drawing area as it goes. When you pause for a beat (a per-mode debounce), the page is cropped to just the ink and sent to the Claude API as a vision message under the active mode's system prompt. There is no separate OCR step, Claude reads the ink directly.
 
 <p align="center">
-  <img src="docs/pipeline.svg" alt="Neo Smartpen to canvas to Claude vision to voice and chime" width="720">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/pipeline-dark.svg">
+    <img src="docs/pipeline.svg" alt="Neo Smartpen to canvas to Claude vision to voice and chime" width="720">
+  </picture>
 </p>
 
 It stays quiet while you are working correctly. Only an actual mistake, as a one-line spoken hint, or a finished and correct result, as a single chime, interrupts you. The model solves the problem itself and verifies the answer before it judges, so it errs toward silence rather than crying wolf.

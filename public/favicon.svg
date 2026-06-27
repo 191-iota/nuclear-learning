@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <style>
+    :root { --ink: #1a1a1a; --accent: #cc785c; }
+    @media (prefers-color-scheme: dark) { :root { --ink: #f0efe9; --accent: #d9954a; } }
+  </style>
+  <path transform="translate(3 26)" d="M6.09 0L2.25 0L2.25-15.48L6.09-15.48L6.09-12.75L6.24-12.75Q6.75-14.01 7.81-14.92Q8.88-15.84 10.77-15.84Q13.05-15.84 14.47-14.32Q15.90-12.81 15.90-9.99L15.90 0L12.06 0L12.06-9.45Q12.06-12.81 9.15-12.81Q8.55-12.81 8.01-12.66Q7.47-12.51 7.04-12.20Q6.60-11.88 6.34-11.43Q6.09-10.98 6.09-10.35" fill="var(--ink)"/>
+  <rect x="23" y="5.52" width="6" height="20.48" rx="1.5" fill="var(--accent)"/>
+</svg>
