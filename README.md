@@ -6,7 +6,7 @@
 
 ![Vue 3](https://img.shields.io/badge/Vue-3-1a1a1a?style=flat-square) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-1a1a1a?style=flat-square) ![Claude vision](https://img.shields.io/badge/Claude-vision-cc785c?style=flat-square) ![Web Bluetooth](https://img.shields.io/badge/Web%20Bluetooth-Chrome%20%2F%20Edge-1a1a1a?style=flat-square)
 
-> You antisocial folks will particularly like this one. Sorry tutors :D
+> You antisocial folks will particularly like this one
 
 Real-time feedback for handwritten work. You write on paper with a Neo Smartpen, the strokes stream into the browser over Bluetooth, and a moment after you pause the page goes to Claude, which reads it and tells you, spoken aloud or with a chime, whether it found a mistake. It is a tight write, check, correct loop: you fix the error yourself from a one-line hint instead of being shown the answer.
 
