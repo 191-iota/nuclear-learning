@@ -1,24 +1,9 @@
 <script setup lang="ts">
 import { modes, addMode, removeMode, resetModes } from '@/stores/modes';
 import { settings, resetSettings } from '@/stores/settings';
+import { MODELS, EFFORTS } from '@/models';
 
-const MODELS = [
-  { id: 'claude-opus-4-8', label: 'Opus 4.8', in: 5, out: 25 },
-  { id: 'claude-opus-4-7', label: 'Opus 4.7', in: 5, out: 25 },
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', in: 3, out: 15 },
-  { id: 'claude-haiku-4-5', label: 'Haiku 4.5', in: 1, out: 5 },
-];
-const EFFORTS = ['low', 'medium', 'high', 'max'];
 const STYLES = ['spoken', 'chime', 'both'];
-
-// When the model changes, drop in its list prices so the Usage chart stays honest.
-function onModelChange(): void {
-  const m = MODELS.find((x) => x.id === settings.api.model);
-  if (m) {
-    settings.api.priceInputPerMTok = m.in;
-    settings.api.priceOutputPerMTok = m.out;
-  }
-}
 </script>
 
 <template>
@@ -35,15 +20,15 @@ function onModelChange(): void {
         <summary>
           <span class="summary-label">Engine</span>
           <span class="summary-meta">
-            {{ settings.api.model.replace('claude-', '') }} · solve {{ settings.api.solveEffort }} /
-            verify {{ settings.api.checkEffort }}
+            solve {{ settings.api.solveModel.replace('claude-', '') }} · verify
+            {{ settings.api.verifyModel.replace('claude-', '') }}
           </span>
         </summary>
         <div class="config-body">
           <div class="field-row">
             <div class="field">
-              <label>Model</label>
-              <select v-model="settings.api.model" @change="onModelChange">
+              <label>Solve model</label>
+              <select v-model="settings.api.solveModel">
                 <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
               </select>
             </div>
@@ -54,9 +39,24 @@ function onModelChange(): void {
               </select>
             </div>
             <div class="field">
-              <label>Verify effort</label>
-              <select v-model="settings.api.checkEffort">
+              <label>Confirm model</label>
+              <select v-model="settings.api.confirmModel">
+                <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Confirm effort</label>
+              <select v-model="settings.api.confirmEffort">
                 <option v-for="e in EFFORTS" :key="e" :value="e">{{ e }}</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field-row" style="margin-top: 0.7rem">
+            <div class="field">
+              <label>Routine verify model (the cheap pass)</label>
+              <select v-model="settings.api.verifyModel">
+                <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
               </select>
             </div>
             <div class="field">
@@ -97,18 +97,13 @@ function onModelChange(): void {
             </div>
           </div>
 
-          <div class="field-row" style="margin-top: 0.7rem">
-            <div class="field">
-              <label>Input $ / 1M tok</label>
-              <input v-model.number="settings.api.priceInputPerMTok" type="number" min="0" step="0.5" />
-            </div>
-            <div class="field">
-              <label>Output $ / 1M tok</label>
-              <input v-model.number="settings.api.priceOutputPerMTok" type="number" min="0" step="0.5" />
-            </div>
-            <div class="field" style="justify-content: flex-end">
-              <button class="ghost" @click="resetSettings">Reset engine</button>
-            </div>
+          <div class="row" style="margin-top: 0.8rem">
+            <span class="muted" style="font-size: 0.72rem">
+              Solve &amp; confirm run on the capable model; routine verify on the cheap one. Prices
+              come from the model, so the Usage cost is exact per scan.
+            </span>
+            <span class="spacer" />
+            <button class="ghost" @click="resetSettings">Reset engine</button>
           </div>
         </div>
       </details>

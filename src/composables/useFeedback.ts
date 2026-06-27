@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { settings } from '@/stores/settings';
 import type { Mode } from '@/types';
-import { recordUsage, newPage } from '@/stores/usage';
+import { recordUsage, newPage, type Role } from '@/stores/usage';
+import { modelInfo } from '@/models';
 
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 
@@ -57,11 +58,14 @@ export function useFeedback() {
   // Distinct verdicts on the current page, oldest first.
   const history: string[] = [];
   let lastDelivered = '';
-  // Session-scoped worked solution for the current problem. The first scan that
-  // can solve does so (at solveEffort); later scans verify the learner's work
-  // against this (at checkEffort) instead of re-deriving. Cleared on resetSession.
+  // Session-scoped worked solution for the current problem. The solve model works
+  // it out once; later scans verify against it on the cheap model. Cleared on
+  // resetSession. `haikuUnreliable` flips on if the confirm model overturns the
+  // cheap model's CORRECT — then the rest of THIS problem verifies on the confirm
+  // model. Reset per problem.
   let cachedProblem = '';
   let cachedSolution = '';
+  let haikuUnreliable = false;
 
   function buildContext(mode: Mode): string {
     if (history.length === 0) {
@@ -86,12 +90,12 @@ export function useFeedback() {
     return lines.join('\n');
   }
 
-  function logUsage(resp: any, mode: Mode, effort: string, cached: boolean): void {
+  function logUsage(resp: any, mode: Mode, model: string, role: Role): void {
     const u = resp?.usage ?? {};
     recordUsage({
       mode: mode.id,
-      effort,
-      cached,
+      model,
+      role,
       input: u.input_tokens ?? 0,
       output: u.output_tokens ?? 0,
       cacheRead: u.cache_read_input_tokens ?? 0,
@@ -132,7 +136,7 @@ export function useFeedback() {
         },
       ],
     });
-    logUsage(resp, mode, effort, false);
+    logUsage(resp, mode, settings.api.model, 'verify');
     return (resp.content as any[])
       .filter((b) => b.type === 'text')
       .map((b) => b.text as string)
@@ -165,67 +169,144 @@ export function useFeedback() {
     return lines.join('\n');
   }
 
-  // Solve-once-then-verify path. The first scan that can solve does so at
-  // solveEffort and the worked solution is cached for the session; later scans
-  // attach that solution and just check the learner's work against it at the
-  // cheaper checkEffort instead of re-deriving it from scratch every time.
-  async function getFeedbackCached(
+  // One structured call to a given model. Cheap models (e.g. Haiku) don't take the
+  // effort parameter or adaptive thinking, so those are omitted for them.
+  async function callModel(
+    model: string,
+    effort: string | null,
+    role: Role,
     data: string,
     mediaType: ImageMediaType,
     mode: Mode,
-  ): Promise<string> {
-    const hasCache = cachedSolution !== '';
-    const effort = hasCache ? settings.api.checkEffort : settings.api.solveEffort;
-    const resp = await getClient().messages.create({
-      model: settings.api.model,
+    text: string,
+  ): Promise<{ problem: string; solution: string; verdict: string }> {
+    const info = modelInfo(model);
+    const useEffort = info.effort && !!effort;
+    const output_config: any = { format: { type: 'json_schema', schema: SOLUTION_SCHEMA } };
+    if (useEffort) output_config.effort = effort;
+    const params: any = {
+      model,
       max_tokens: settings.api.maxTokens,
-      thinking: { type: 'adaptive' },
-      output_config: {
-        effort,
-        format: { type: 'json_schema', schema: SOLUTION_SCHEMA },
-      } as any,
       system: mode.systemPrompt,
       messages: [
         {
           role: 'user',
           content: [
             { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
-            { type: 'text', text: buildCachedContext(hasCache) },
+            { type: 'text', text },
           ],
         },
       ],
-    });
-    logUsage(resp, mode, effort, hasCache);
+      output_config,
+    };
+    if (useEffort) params.thinking = { type: 'adaptive' };
 
-    const text = (resp.content as any[])
+    const resp = await getClient().messages.create(params);
+    logUsage(resp, mode, model, role);
+    const out = (resp.content as any[])
       .filter((b) => b.type === 'text')
       .map((b) => b.text as string)
       .join('')
       .trim();
-
     try {
-      const parsed = JSON.parse(text) as {
-        problem?: string;
-        solution?: string;
-        verdict?: string;
+      const p = JSON.parse(out) as { problem?: string; solution?: string; verdict?: string };
+      return {
+        problem: (p.problem ?? '').trim(),
+        solution: (p.solution ?? '').trim(),
+        verdict: (p.verdict ?? '').trim(),
       };
-      const sol = (parsed.solution ?? '').trim();
-      const prob = (parsed.problem ?? '').trim();
-      if (sol) {
-        // (Re)solved — cache the worked solution for the rest of the session.
-        cachedProblem = prob || cachedProblem;
-        cachedSolution = sol;
-      } else if (hasCache && prob && cachedProblem && prob !== cachedProblem) {
-        // Learner switched problems but the cheap pass couldn't solve the new one;
-        // drop the stale solution so the next scan re-solves at solveEffort.
-        cachedProblem = '';
-        cachedSolution = '';
-      }
-      return (parsed.verdict ?? '').trim();
     } catch {
-      // Not valid JSON — treat the whole reply as the verdict and leave the cache.
-      return text;
+      return { problem: '', solution: '', verdict: out };
     }
+  }
+
+  // Learner moved to a different problem than the cached one → drop the cache so
+  // the next scan re-solves on the solve model, and trust the cheap verifier again
+  // for the new problem. Returns true if a switch was detected.
+  function handleProblemSwitch(prob: string): boolean {
+    if (prob && cachedProblem && prob !== cachedProblem) {
+      cachedProblem = '';
+      cachedSolution = '';
+      haikuUnreliable = false;
+      return true;
+    }
+    return false;
+  }
+
+  // Tiered solve-then-verify path:
+  //   solve   — first solvable scan: the solve model works it out once and caches it.
+  //   verify  — every later scan: a cheap model checks progress against the cache.
+  //   confirm — when the cheap model says CORRECT, the confirm model re-checks the
+  //             final answer before it chimes; if it disagrees, the cheap model is
+  //             marked unreliable and the rest of THIS problem verifies on the
+  //             confirm model.
+  async function getFeedbackCached(
+    data: string,
+    mediaType: ImageMediaType,
+    mode: Mode,
+  ): Promise<string> {
+    // SOLVE — no cached solution yet.
+    if (cachedSolution === '') {
+      const r = await callModel(
+        settings.api.solveModel,
+        settings.api.solveEffort,
+        'solve',
+        data,
+        mediaType,
+        mode,
+        buildCachedContext(false),
+      );
+      if (r.solution) {
+        cachedProblem = r.problem || cachedProblem;
+        cachedSolution = r.solution;
+      }
+      return r.verdict;
+    }
+
+    // DEMOTED — the cheap verifier was caught wrong on this problem → use confirm model.
+    if (haikuUnreliable) {
+      const r = await callModel(
+        settings.api.confirmModel,
+        settings.api.confirmEffort,
+        'confirm',
+        data,
+        mediaType,
+        mode,
+        buildCachedContext(true),
+      );
+      return handleProblemSwitch(r.problem) ? 'OK' : r.verdict;
+    }
+
+    // VERIFY — cheap model checks progress against the cached solution.
+    const r = await callModel(
+      settings.api.verifyModel,
+      null,
+      'verify',
+      data,
+      mediaType,
+      mode,
+      buildCachedContext(true),
+    );
+    if (handleProblemSwitch(r.problem)) return 'OK';
+    if (!isCorrect(r.verdict)) return r.verdict;
+
+    // The cheap model thinks it's done — re-check the final answer on the confirm
+    // model before chiming CORRECT.
+    const c = await callModel(
+      settings.api.confirmModel,
+      settings.api.confirmEffort,
+      'confirm',
+      data,
+      mediaType,
+      mode,
+      buildCachedContext(true),
+    );
+    if (handleProblemSwitch(c.problem)) return 'OK';
+    if (isCorrect(c.verdict)) return c.verdict; // confirmed
+    // The confirm model disagrees — the cheap one was wrong. Stop trusting it on
+    // this problem and deliver the confirm model's hint instead.
+    haikuUnreliable = true;
+    return c.verdict;
   }
 
   /** Commit a verdict to the page's session memory (kept distinct). */
@@ -329,6 +410,7 @@ export function useFeedback() {
     lastDelivered = '';
     cachedProblem = '';
     cachedSolution = '';
+    haikuUnreliable = false;
     newPage();
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();

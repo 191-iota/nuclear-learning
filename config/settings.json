@@ -14,10 +14,11 @@
   "api": {
     "model": "claude-opus-4-8",
     "maxTokens": 4096,
+    "solveModel": "claude-opus-4-8",
     "solveEffort": "medium",
-    "checkEffort": "low",
-    "priceInputPerMTok": 5,
-    "priceOutputPerMTok": 25
+    "verifyModel": "claude-haiku-4-5",
+    "confirmModel": "claude-opus-4-8",
+    "confirmEffort": "low"
   },
   "export": {
     "maxEdgePx": 896,

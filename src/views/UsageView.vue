@@ -51,7 +51,10 @@ function tip(s: PageStat): string {
   <section class="scroll">
     <div class="page-head">
       <h2>Usage</h2>
-      <span class="muted mono" style="font-size: 0.72rem">{{ settings.api.model }}</span>
+      <span class="muted mono" style="font-size: 0.72rem">
+        solve {{ settings.api.solveModel.replace('claude-', '') }} · verify
+        {{ settings.api.verifyModel.replace('claude-', '') }}
+      </span>
       <span class="spacer" />
       <div class="tabs">
         <button class="tab" :class="{ active: metric === 'cost' }" @click="metric = 'cost'">

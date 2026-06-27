@@ -1,19 +1,24 @@
 import { reactive } from 'vue';
-import { settings } from '@/stores/settings';
+import { modelInfo } from '@/models';
 
 /**
  * Reactive token-usage log. Every scan records its API `usage` here; the Usage
  * dashboard reads it live. Records are grouped by "page" (one Clear-to-Clear
  * session) and persisted to localStorage so the dashboard survives reloads.
  *
+ * Each record carries the model it ran on, so cost is priced per record (the
+ * tiered flow runs solves/confirms on Opus and routine verifies on a cheap model).
+ *
  * Console access:  __nlUsage.summary() · __nlUsage.records() · __nlUsage.clear()
  */
+export type Role = 'solve' | 'verify' | 'confirm';
+
 export interface UsageRecord {
   page: number;
   ts: number;
   mode: string;
-  effort: string;
-  cached: boolean; // cheap verify-against-cached-solution scan?
+  model: string;
+  role: Role;
   input: number;
   output: number; // includes thinking tokens
   cacheRead: number;
@@ -42,6 +47,15 @@ function load(): Persisted {
 }
 
 export const usage = reactive(load());
+
+// Old records (pre-tiering) lack model/role; fall back gracefully so the chart
+// still prices and groups them.
+function recModel(r: UsageRecord): string {
+  return r.model ?? 'claude-opus-4-8';
+}
+function recRole(r: UsageRecord): Role {
+  return r.role ?? ((r as unknown as { cached?: boolean }).cached ? 'verify' : 'solve');
+}
 
 function persist(): void {
   try {
@@ -82,8 +96,6 @@ export interface PageStat {
 }
 
 export function perPage(): PageStat[] {
-  const inRate = settings.api.priceInputPerMTok;
-  const outRate = settings.api.priceOutputPerMTok;
   const byPage = new Map<number, PageStat>();
   for (const r of usage.records) {
     let s = byPage.get(r.page);
@@ -101,44 +113,44 @@ export function perPage(): PageStat[] {
       };
       byPage.set(r.page, s);
     }
+    const info = modelInfo(recModel(r));
     s.scans += 1;
-    if (r.cached) s.verifies += 1;
-    else s.solves += 1;
+    if (recRole(r) === 'solve') s.solves += 1;
+    else s.verifies += 1;
     s.input += r.input;
     s.output += r.output;
+    s.inputCostUSD += (r.input * info.in) / 1e6;
+    s.outputCostUSD += (r.output * info.out) / 1e6;
   }
   const stats = [...byPage.values()].sort((a, b) => a.page - b.page);
-  for (const s of stats) {
-    s.inputCostUSD = (s.input * inRate) / 1e6;
-    s.outputCostUSD = (s.output * outRate) / 1e6;
-    s.costUSD = s.inputCostUSD + s.outputCostUSD;
-  }
+  for (const s of stats) s.costUSD = s.inputCostUSD + s.outputCostUSD;
   return stats;
 }
 
 export function usageSummary() {
-  const inRate = settings.api.priceInputPerMTok;
-  const outRate = settings.api.priceOutputPerMTok;
-  const totals = usage.records.reduce(
-    (a, r) => ({
-      input: a.input + r.input,
-      output: a.output + r.output,
-      solves: a.solves + (r.cached ? 0 : 1),
-      verifies: a.verifies + (r.cached ? 1 : 0),
-    }),
-    { input: 0, output: 0, solves: 0, verifies: 0 },
-  );
+  let input = 0;
+  let output = 0;
+  let solves = 0;
+  let verifies = 0;
+  let cost = 0;
+  for (const r of usage.records) {
+    const info = modelInfo(recModel(r));
+    input += r.input;
+    output += r.output;
+    if (recRole(r) === 'solve') solves += 1;
+    else verifies += 1;
+    cost += (r.input * info.in + r.output * info.out) / 1e6;
+  }
   const scans = usage.records.length;
   const pages = new Set(usage.records.map((r) => r.page)).size || 1;
-  const costUSD = (totals.input * inRate + totals.output * outRate) / 1e6;
   return {
     scans,
     pages,
-    totals,
-    tokensTotal: totals.input + totals.output,
-    tokensPerScan: scans ? Math.round((totals.input + totals.output) / scans) : 0,
-    estCostUSD: +costUSD.toFixed(4),
-    costPerPageUSD: +(costUSD / pages).toFixed(4),
+    totals: { input, output, solves, verifies },
+    tokensTotal: input + output,
+    tokensPerScan: scans ? Math.round((input + output) / scans) : 0,
+    estCostUSD: +cost.toFixed(4),
+    costPerPageUSD: +(cost / pages).toFixed(4),
   };
 }
 
