@@ -20,15 +20,6 @@ const SOLUTION_SCHEMA = {
   },
 };
 
-// Automatic routing: a cheap model classifies the problem's difficulty once, which
-// picks the solve effort.
-const CLASSIFY_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['complexity'],
-  properties: { complexity: { type: 'string', enum: ['simple', 'complex', 'unready'] } },
-};
-
 let client: Anthropic | null = null;
 
 function getClient(): Anthropic {
@@ -240,34 +231,40 @@ export function useFeedback() {
   ): Promise<string> {
     const model = settings.api.classifyModel;
     const info = modelInfo(model);
+    // Plain one-word reply (no structured output — keeps it robust on cheap models).
     const params: any = {
       model,
-      max_tokens: 64,
+      max_tokens: 16,
       system:
-        'You classify a handwritten math problem by difficulty. Judge the PROBLEM being posed, not the learner\'s working. Set "complexity" to "simple" for a one- or two-step problem, "complex" for a multi-step problem, or "unready" if the problem statement is not yet fully written or you cannot tell. If unsure between simple and complex, answer complex.',
+        'You classify a handwritten math problem by difficulty. Judge the PROBLEM being posed, not the learner\'s working. Reply with EXACTLY ONE word and nothing else: "simple" for a one- or two-step problem, "complex" for a multi-step problem, or "unready" if the problem statement is not yet fully written or you cannot tell. If unsure between simple and complex, reply complex.',
       messages: [
         {
           role: 'user',
           content: [
             { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
-            { type: 'text', text: 'Classify the problem: simple, complex, or unready.' },
+            { type: 'text', text: 'One word: simple, complex, or unready.' },
           ],
         },
       ],
-      output_config: { format: { type: 'json_schema', schema: CLASSIFY_SCHEMA } },
     };
     if (info.effort) params.thinking = { type: 'adaptive' };
-    const resp = await getClient().messages.create(params);
-    logUsage(resp, mode, model, 'classify');
-    const out = (resp.content as any[])
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text as string)
-      .join('')
-      .trim();
     try {
-      return (JSON.parse(out).complexity ?? 'unready').trim();
-    } catch {
-      return 'unready';
+      const resp = await getClient().messages.create(params, { timeout: 12000 });
+      logUsage(resp, mode, model, 'classify');
+      const out = (resp.content as any[])
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text as string)
+        .join(' ')
+        .toLowerCase();
+      if (out.includes('complex')) return 'complex';
+      if (out.includes('simple')) return 'simple';
+      if (out.includes('unready')) return 'unready';
+      return 'complex';
+    } catch (err) {
+      // Never let a classify failure stall the scan — fall through to a complex
+      // (medium) solve, which is the safe default.
+      console.warn('[nuclear-learning] classify failed, defaulting to complex:', err);
+      return 'complex';
     }
   }
 
