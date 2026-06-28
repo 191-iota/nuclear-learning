@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.png" alt="nuclear·learning — write on paper, get the correction the moment you pause" width="100%">
+  <img src="docs/banner.png" alt="nuclear·learning, write on paper and get the correction the moment you pause" width="100%">
 </p>
 
 # nuclear-learning
@@ -8,7 +8,7 @@
 
 > You antisocial folks will particularly like this one
 
-Real-time feedback for handwritten work. You write on paper with a Neo Smartpen, the strokes stream into the browser over Bluetooth, and a moment after you pause the page goes to Claude, which reads it and tells you, spoken aloud or with a chime, whether it found a mistake. It is a tight write, check, correct loop: you fix the error yourself from a one-line hint instead of being shown the answer.
+Real-time feedback for handwritten work. You write on paper with a Neo Smartpen. The strokes stream into the browser over Bluetooth, and a moment after you pause the page goes to Claude. It reads the page and tells you, spoken aloud or with a chime, whether it found a mistake. The hint is one line and names the first error. It does not give the answer, so you make the correction yourself and carry on.
 
 <p align="center">
   <img src="docs/app.png" alt="the app: a problem on the pad with the app's hint in the status bar" width="880">
@@ -22,18 +22,18 @@ The same work starts on real Ncode paper, written with the Neo pen.
 
 ## Traditional vs. nuclear
 
-Most practice runs a slow loop: you finish a page, hand it in, and find out what went wrong long after, when you are simply shown the answer. This runs the loop as you write — the page is checked the moment you pause, and you get a one-line hint, so you find and fix the error yourself and keep going.
+Most practice runs a slow loop. You finish a page, hand it in, and find out what went wrong much later, usually by reading the answer. This runs the loop while you write. The page is checked the moment you pause, and a one-line hint points at the error so you fix it and carry on.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/loop-dark.svg">
-    <img src="docs/loop.svg" alt="traditional learning is a slow one-shot path that ends in the answer being shown; nuclear learning is a tight write, check, fix loop with a one-line hint" width="820">
+    <img src="docs/loop.svg" alt="the traditional path: write a page, hand it in, get it marked later. the nuclear loop: write a line, get it checked, fix it, carry on" width="820">
   </picture>
 </p>
 
 ## How it works
 
-The pen streams (x, y, pressure) points over Web Bluetooth. The app draws them onto a canvas, fitting the page coordinates to the drawing area as it goes. When you pause for a beat (a per-mode debounce), the page is cropped to just the ink and sent to the Claude API as a vision message under the active mode's system prompt. There is no separate OCR step, Claude reads the ink directly.
+The pen streams (x, y, pressure) points over Web Bluetooth. The app draws them onto a canvas, fitting the page coordinates to the drawing area as it goes. When you pause for a beat (a per-mode debounce), the page is cropped to just the ink and sent to the Claude API as a vision message under the active mode's system prompt. There is no separate OCR step. Claude reads the ink directly.
 
 <p align="center">
   <picture>
@@ -42,7 +42,7 @@ The pen streams (x, y, pressure) points over Web Bluetooth. The app draws them o
   </picture>
 </p>
 
-It stays quiet while you are working correctly. Only an actual mistake, as a one-line spoken hint, or a finished and correct result, as a single chime, interrupts you. The model solves the problem itself and verifies the answer before it judges, so it errs toward silence rather than crying wolf.
+It stays quiet while your work is correct. A mistake interrupts you with a one-line spoken hint, and a finished, correct result with a single chime. The model solves the problem itself and verifies the answer before it judges, so it stays silent unless it is sure.
 
 When a solution is finished and right you get that single chime. Below, a quadratic that was written with a dropped sign, caught, corrected on the page, and confirmed.
 
@@ -77,7 +77,7 @@ The app is three tabs. The pad is where you work: connect the pen, choose a mode
   <img src="docs/ui-pad.png" alt="the pad tab: a thin toolbar over a blank writing area" width="860">
 </p>
 
-Usage logs every scan's token cost and draws it per page, so you can watch a model or setting change move the number live, in a dark theme if you like. What a real run actually costs is below.
+Usage logs every scan's token cost and charts it per page, so a change to a model or a setting moves the number live. It has a dark theme too.
 
 Presets is where the modes live. A mode's prompt, debounce, feedback style, and whether it caches a solved answer are all editable in place, with the engine settings, model, effort, image size, and prices, folded into the panel at the top. The defaults still come from `config/modes.json` and `config/settings.json`; this just edits them without a reload.
 
@@ -87,7 +87,7 @@ Presets is where the modes live. A mode's prompt, debounce, feedback style, and 
 
 ## What it costs
 
-A page is scanned many times as you write, so the natural question is what that costs. To find out I played a deliberately clumsy student: a messy page, worked out in pieces and left to re-scan again and again as it came together.
+A page is scanned many times as you write, so cost matters. To measure it I played a deliberately clumsy student: one messy page, worked out in pieces and left to re-scan again and again as it came together.
 
 <p align="center">
   <img src="docs/clumsy-run.jpg" alt="the reflection problem worked out by hand on Ncode paper, with a couple of self-corrected slips" width="440">
@@ -99,15 +99,15 @@ Nine scans of that page came to about nine cents.
   <img src="docs/cost.png" alt="usage for the page: 9 scans, 19.5k input and 796 output tokens, $0.089" width="300">
 </p>
 
-That holds because the work is split across models by how hard each part is. The first scan that can read a complete problem is solved once, in full, by the strong model, and the worked answer is kept as a short checklist. Every scan after that is only a comparison against that checklist, is the work so far still on track, so it runs on a cheaper, faster model. The moment that cheap pass thinks the answer is finished, the strong model is brought back for one last look to confirm the result before it chimes; if it disagrees, the cheap model is dropped for the rest of that problem. The expensive model runs only at the two moments that matter, working the problem out and signing off the result, and the cheap one carries the repetitive middle.
+This holds because the work is split across models by how hard each part is. The first scan that can read a complete problem is solved once, in full, by the strong model, and the worked answer is kept as a short checklist. Every later scan compares the work so far against that checklist, so it runs on a cheaper, faster model. When that cheap pass thinks the answer is finished, the strong model takes one last look to confirm the result before the chime. If it disagrees, the cheap model is dropped for the rest of that problem. The strong model runs twice, to work the problem out and to sign off the result, and the cheap one carries the repetitive middle.
 
 Two things keep the scan count down. A scan only fires once enough new ink has arrived, so pausing to think spends nothing, and once a problem is solved it is never solved again. Most of what is left is input, the cropped image and the prompt re-sent on each scan, so a smaller image or fewer scans move the number more than anything on the output side.
 
-There is a second way to route this, off by default. Instead of handing the repetitive middle to a cheaper model, a quick classifier judges each problem as simple or multi-step the first time it can read it, and everything then runs on the strong model: a light touch on a simple problem, more deliberation on a multi-step one. Whether the cheaper-middle split or the by-difficulty one comes out ahead depends on the problems you throw at it, and both live in the Presets panel.
+A second routing mode is available, off by default. A quick classifier judges each problem as simple or multi-step the first time it can read it, then every scan runs on the strong model, at low effort for a simple problem and your solve effort for a multi-step one. Which mode comes out cheaper depends on the problems you give it. Both live in the Presets panel.
 
 ## Staying coherent across a page
 
-A page is checked many times as you write, so the scans stay consistent instead of each being a fresh shot. The same correction is never replayed: a verdict is spoken or chimed only when it differs from the last one, so while you are still fixing "Step 3: check your sign" it stays on screen but stops talking. Each request also carries the verdicts already given as context, so Claude stays consistent with itself, never re-flagging a line it already confirmed and keeping the same first unresolved error until you fix it. Feedback follows you to the problem you are on too, so several problems can share a page (1a, 1b, 2) and it grades the lowest unfinished one rather than staying pinned to an earlier error. Requests run one at a time and in order, so verdicts never arrive out of sequence.
+A page is checked many times as you write, and the scans stay consistent across the page. The same correction is never replayed: a verdict is spoken or chimed only when it differs from the last one, so while you are still fixing "Step 3: check your sign" it stays on screen and stops talking. Each request also carries the verdicts already given as context, so Claude stays consistent with itself, never re-flagging a line it already confirmed and holding the same first unresolved error until you fix it. Feedback follows you to the problem you are on, so several problems can share a page (1a, 1b, 2) and it grades the lowest unfinished one. Requests run one at a time and in order, so verdicts never arrive out of sequence.
 
 Pressing Clear wipes the pad and resets the page context for a clean start on the next problem. Switching mode resets the context the same way but keeps your drawing.
 

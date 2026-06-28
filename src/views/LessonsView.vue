@@ -13,7 +13,7 @@ import {
 const stats = computed(() => lessonStats());
 const all = computed(() => [...lessonStore.lessons].sort((a, b) => b.ts - a.ts));
 
-// Review session — active recall over the due cards: show the problem, you try to
+// Review session, active recall over the due cards: show the problem, you try to
 // recall the slip, then reveal and grade. Spaced repetition schedules the rest.
 const queue = ref<Lesson[]>([]);
 const idx = ref(0);
@@ -76,7 +76,7 @@ function statusLabel(l: Lesson): string {
       <button v-if="all.length" class="ghost danger" @click="clearLessons">Clear all</button>
     </div>
 
-    <!-- REVIEW — one card at a time, recall before reveal -->
+    <!-- REVIEW, one card at a time, recall before reveal -->
     <template v-if="reviewing && current">
       <div class="review-head">
         <span class="muted mono">card {{ idx + 1 }} / {{ queue.length }}</span>
@@ -87,20 +87,20 @@ function statusLabel(l: Lesson): string {
       <div class="card flash">
         <div class="flash-tag">
           <span class="mono">{{ current.modeLabel }}</span>
-          <span v-if="current.seen > 1" class="repeat mono">slipped {{ current.seen }}×</span>
+          <span v-if="current.seen > 1" class="repeat mono">missed {{ current.seen }}×</span>
         </div>
 
         <div class="cue">
           <div v-if="current.problem" class="problem mono">{{ current.problem }}</div>
-          <div class="ask">What did you get wrong here?</div>
-          <div class="hint muted">Recall the slip and the fix before you reveal it.</div>
+          <div class="ask">Recall the mistake you fixed here.</div>
+          <div class="hint muted">Bring the mistake and the fix to mind before you reveal it.</div>
         </div>
 
         <button v-if="!revealed" class="primary reveal" @click="revealed = true">Reveal</button>
 
         <template v-else>
           <div class="answer">
-            <div class="answer-k mono">the slip</div>
+            <div class="answer-k mono">the mistake</div>
             <div class="mistake">{{ current.mistake }}</div>
             <details v-if="current.solution" class="sol">
               <summary>worked solution</summary>
@@ -144,8 +144,8 @@ function statusLabel(l: Lesson): string {
         <div>
           <strong style="font-size: 0.9rem">{{ stats.due ? `${stats.due} due for review` : 'Nothing due right now' }}</strong>
           <div class="muted" style="font-size: 0.75rem; margin-top: 0.2rem">
-            Each card shows the problem first and asks you to recall the fix — retrieving your own
-            correction is what makes it stick. Come back as cards fall due.
+            Each card shows the problem first, so you recall the fix before you see it. Cards come
+            back for review as they fall due.
           </div>
         </div>
         <span class="spacer" />
@@ -172,8 +172,8 @@ function statusLabel(l: Lesson): string {
 
     <!-- EMPTY -->
     <div v-else class="empty">
-      No lessons yet. When the grader catches a mistake and you fix it, the slip is logged here
-      automatically — then reviewed with spaced repetition so it does not come back.
+      No lessons yet. When the grader catches a mistake and you fix it, it is logged here. You
+      review it later with spaced repetition so it stops coming back.
     </div>
   </section>
 </template>

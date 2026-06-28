@@ -15,7 +15,7 @@ const STYLES = ['spoken', 'chime', 'both'];
         <button class="ghost" @click="addMode">+ Preset</button>
       </div>
 
-      <!-- ENGINE — collapsed by default -->
+      <!-- ENGINE, collapsed by default -->
       <details class="card">
         <summary>
           <span class="summary-label">Engine</span>
@@ -92,7 +92,7 @@ const STYLES = ['spoken', 'chime', 'both'];
               <input v-model.number="settings.export.maxEdgePx" type="number" min="256" step="64" />
             </div>
             <div class="field span-2">
-              <label>JPEG quality — {{ settings.export.jpegQuality }}</label>
+              <label>JPEG quality ({{ settings.export.jpegQuality }})</label>
               <input
                 v-model.number="settings.export.jpegQuality"
                 type="range"
@@ -135,7 +135,7 @@ const STYLES = ['spoken', 'chime', 'both'];
         </div>
       </details>
 
-      <!-- PRESETS — each collapsed; expand to edit -->
+      <!-- PRESETS, each collapsed; expand to edit -->
       <details v-for="mode in modes" :key="mode.id" class="card">
         <summary>
           <span class="summary-label">{{ mode.label }}</span>

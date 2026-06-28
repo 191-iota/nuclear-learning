@@ -4,7 +4,7 @@ import { reactive } from 'vue';
  * Lessons = your own corrected mistakes, captured for free.
  *
  * When the grader flags an error ("Step 3: check your sign") and you then fix it
- * so the problem turns CORRECT, that error is logged here — no extra API call, the
+ * so the problem turns CORRECT, that error is logged here, no extra API call, the
  * data is already in hand from the scan that judged you (see useFeedback). The
  * Lessons tab reviews them with active recall + spaced repetition, which is where
  * the retention comes from: re-testing your own corrected error right after the
@@ -21,7 +21,7 @@ export interface Lesson {
   mistake: string; // the corrected error hint, verbatim
   solution: string; // worked solution, for the reveal (may be '')
   // Spaced-repetition state (Leitner box system).
-  box: number; // 0..MAX_BOX — higher = longer interval
+  box: number; // 0..MAX_BOX, higher = longer interval
   due: number; // next review time (ms epoch)
   reps: number; // total reviews
   lapses: number; // times forgotten on review
@@ -62,7 +62,7 @@ function persist(): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(lessonStore));
   } catch {
-    /* storage full / unavailable — non-fatal */
+    /* storage full / unavailable, non-fatal */
   }
 }
 
@@ -74,10 +74,10 @@ let counter = 0;
 
 /**
  * Record a corrected mistake. Called from the feedback loop the moment a problem
- * turns CORRECT after an error — the inputs are already in hand, so this costs
+ * turns CORRECT after an error, the inputs are already in hand, so this costs
  * nothing. If the same mistake on the same problem was logged most recently, it is
  * resurfaced (re-due now, box reset) and its `seen` count bumped rather than
- * duplicated — repeating a mistake should bring it back, not clutter the deck.
+ * duplicated, repeating a mistake should bring it back, not clutter the deck.
  */
 export function addLesson(input: {
   mode: string;

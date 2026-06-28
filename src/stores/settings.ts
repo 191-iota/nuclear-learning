@@ -41,7 +41,7 @@ watch(
     try {
       localStorage.setItem(KEY, JSON.stringify(settings));
     } catch {
-      /* storage full / unavailable — non-fatal */
+      /* storage full / unavailable, non-fatal */
     }
   },
   { deep: true },

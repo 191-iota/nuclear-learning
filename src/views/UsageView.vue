@@ -27,7 +27,7 @@ function segIn(s: PageStat): number {
 function fill(s: PageStat): number {
   return Math.max(0, maxVal.value - segOut(s) - segIn(s));
 }
-// Normalise to flex-grow factors that sum to 100 per bar — keeps proportions and
+// Normalise to flex-grow factors that sum to 100 per bar, keeps proportions and
 // avoids the CSS rule where grow factors summing to < 1 don't fill the track.
 function grow(v: number): number {
   return (v / maxVal.value) * 100;
@@ -107,8 +107,8 @@ function tip(s: PageStat): string {
           </div>
         </div>
         <div class="legend">
-          <span><span class="dot" style="background: var(--chart-in)" />Input — image + prompt (cheap)</span>
-          <span><span class="dot" style="background: var(--chart-out)" />Output — thinking + verdict (5× price)</span>
+          <span><span class="dot" style="background: var(--chart-in)" />Input (image + prompt, cheap)</span>
+          <span><span class="dot" style="background: var(--chart-out)" />Output (thinking + verdict, 5× price)</span>
         </div>
       </div>
 
@@ -119,7 +119,7 @@ function tip(s: PageStat): string {
     </template>
 
     <div v-else class="empty">
-      No scans recorded yet. Connect the pen and write on the Pad — usage shows up here live.
+      No scans recorded yet. Connect the pen and write on the Pad. Usage shows up here live.
     </div>
   </section>
 </template>

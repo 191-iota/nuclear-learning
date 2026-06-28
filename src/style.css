@@ -1,6 +1,6 @@
 :root {
   /* Neutral light grey base (kept off the warm-cream palette on purpose),
-     near-black ink, and a single muted-gold accent — the "nuclear" spark,
+     near-black ink, and a single muted-gold accent, the "nuclear" spark,
      used only for the atom nucleus and the token-output bar. */
   --bg: #f4f4f1;
   --panel: #ffffff;

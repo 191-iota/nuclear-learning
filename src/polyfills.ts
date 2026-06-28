@@ -10,7 +10,7 @@ if (g.global === undefined) {
   g.global = globalThis;
 }
 // Firebase / JSZip inside web_pen_sdk read `process.env` at module-eval time.
-// Provide a minimal browser shim. `env` only — no `process.versions`, so libs
+// Provide a minimal browser shim. `env` only, no `process.versions`, so libs
 // that feature-detect Node correctly stay on their browser code paths.
 if (g.process === undefined) {
   g.process = { env: {} };

@@ -60,9 +60,9 @@ export function useFeedback() {
   const history: string[] = [];
   let lastDelivered = '';
   // Session-scoped worked solution for the current problem. The solve model works
-  // it out once and this LATCHES — later scans verify against it on the cheap model
+  // it out once and this LATCHES, later scans verify against it on the cheap model
   // and it is never re-solved until resetSession (Clear). `haikuUnreliable` flips on
-  // if the confirm model overturns the cheap model's CORRECT — then the rest of THIS
+  // if the confirm model overturns the cheap model's CORRECT, then the rest of THIS
   // problem verifies on the confirm model.
   let cachedSolution = '';
   let cachedProblem = '';
@@ -119,7 +119,7 @@ export function useFeedback() {
     return verdict;
   }
 
-  // The most recent flagged error still in session memory — the mistake the
+  // The most recent flagged error still in session memory, the mistake the
   // learner just had to fix. Skips OK / CORRECT lines.
   function lastError(): string {
     for (let i = history.length - 1; i >= 0; i--) {
@@ -131,7 +131,7 @@ export function useFeedback() {
 
   // Zero-cost lesson capture: the moment a problem turns CORRECT after an error,
   // the error verdict (and, for caching modes, the problem label + worked
-  // solution) is already in hand from this very scan — log it for review. One per
+  // solution) is already in hand from this very scan, log it for review. One per
   // problem; nothing is captured when the work was right the first time.
   function maybeCaptureLesson(verdict: string, mode: Mode): void {
     if (lessonCaptured || mode.errorChecking === false) return;
@@ -266,7 +266,7 @@ export function useFeedback() {
   ): Promise<string> {
     const model = settings.api.classifyModel;
     const info = modelInfo(model);
-    // Plain one-word reply (no structured output — keeps it robust on cheap models).
+    // Plain one-word reply (no structured output, keeps it robust on cheap models).
     const params: any = {
       model,
       max_tokens: 16,
@@ -296,7 +296,7 @@ export function useFeedback() {
       if (out.includes('unready')) return 'unready';
       return 'complex';
     } catch (err) {
-      // Never let a classify failure stall the scan — fall through to a complex
+      // Never let a classify failure stall the scan, fall through to a complex
       // (medium) solve, which is the safe default.
       console.warn('[nuclear-learning] classify failed, defaulting to complex:', err);
       return 'complex';
@@ -344,15 +344,13 @@ export function useFeedback() {
     return r.verdict;
   }
 
-  // Tiered solve-then-verify path:
-  //   solve   — runs only until a solution is cached. ONCE SOLVED IT LATCHES: the
-  //             problem is never solved again for the rest of the session (until
-  //             Clear). Move to a new problem with Clear.
-  //   verify  — every later scan: a cheap model checks progress against the cache.
-  //   confirm — when the cheap model says CORRECT, the confirm model re-checks the
-  //             final answer before it chimes; if it disagrees, the cheap model is
-  //             marked unreliable and the rest of THIS problem verifies on the
-  //             confirm model.
+  // Tiered solve-then-verify path. The solve step runs only until a solution is
+  // cached. Once solved it LATCHES: the problem is never solved again for the rest
+  // of the session (Clear moves to a new problem). The verify step runs every later
+  // scan, where a cheap model checks progress against the cache. The confirm step
+  // runs when the cheap model says CORRECT: the confirm model re-checks the final
+  // answer before it chimes. If it disagrees, the cheap model is marked unreliable
+  // and the rest of THIS problem verifies on the confirm model.
   async function getFeedbackCached(
     data: string,
     mediaType: ImageMediaType,
@@ -360,7 +358,7 @@ export function useFeedback() {
   ): Promise<string> {
     if (settings.api.routing === 'auto') return getFeedbackAuto(data, mediaType, mode);
 
-    // SOLVE — only while there is no cached solution. Latches once solved.
+    // SOLVE, only while there is no cached solution. Latches once solved.
     if (cachedSolution === '') {
       const r = await callModel(
         settings.api.solveModel,
@@ -376,7 +374,7 @@ export function useFeedback() {
       return r.verdict;
     }
 
-    // DEMOTED — the cheap verifier was caught wrong on this problem → use confirm model.
+    // DEMOTED, the cheap verifier was caught wrong on this problem → use confirm model.
     if (haikuUnreliable) {
       const r = await callModel(
         settings.api.confirmModel,
@@ -390,7 +388,7 @@ export function useFeedback() {
       return r.verdict;
     }
 
-    // VERIFY — cheap model checks progress against the cached solution. The effort
+    // VERIFY, cheap model checks progress against the cached solution. The effort
     // is applied only if the verify model supports it (ignored for e.g. Haiku).
     const r = await callModel(
       settings.api.verifyModel,
@@ -403,7 +401,7 @@ export function useFeedback() {
     );
     if (!isCorrect(r.verdict)) return r.verdict;
 
-    // The cheap model thinks it's done — re-check the final answer on the confirm
+    // The cheap model thinks it's done, re-check the final answer on the confirm
     // model before chiming CORRECT.
     const c = await callModel(
       settings.api.confirmModel,
@@ -415,7 +413,7 @@ export function useFeedback() {
       buildCachedContext(true),
     );
     if (isCorrect(c.verdict)) return c.verdict; // confirmed
-    // The confirm model disagrees — the cheap one was wrong. Stop trusting it on
+    // The confirm model disagrees, the cheap one was wrong. Stop trusting it on
     // this problem and deliver the confirm model's hint instead.
     haikuUnreliable = true;
     return c.verdict;
@@ -427,7 +425,7 @@ export function useFeedback() {
     const key = normalize(text);
     if (!history.some((h) => normalize(h) === key)) {
       history.push(text);
-      // Keep only the last few verdicts as context — enough for consistency,
+      // Keep only the last few verdicts as context, enough for consistency,
       // small enough to keep re-sent input down on every scan.
       if (history.length > 4) history.shift();
     }
@@ -438,7 +436,7 @@ export function useFeedback() {
   }
 
   // "OK" = correct so far / nothing to report yet. Produces no audio and is not
-  // recorded — keeps the tool silent while the learner is progressing correctly.
+  // recorded, keeps the tool silent while the learner is progressing correctly.
   function isQuiet(text: string): boolean {
     return /^\s*ok[.!]?\s*$/i.test(text);
   }

@@ -18,7 +18,7 @@ interface Bbox {
 /**
  * Renders pen dots onto a canvas. The pen reports raw ncode coordinates whose
  * scale and origin depend on the page, so we track the bounding box of all dots
- * and project them — aspect-preserving and centred — into the canvas on every
+ * and project them, aspect-preserving and centred, into the canvas on every
  * frame. A `requestAnimationFrame` scheduler keeps that O(n)-per-frame regardless
  * of how fast dots arrive.
  */
@@ -26,7 +26,7 @@ export function useCanvas(canvasRef: Ref<HTMLCanvasElement | null>) {
   const dots: PenDot[] = [];
   let bbox: Bbox | null = null;
   let rafId = 0;
-  // Largest force seen so far — the pen reports raw force values whose scale
+  // Largest force seen so far, the pen reports raw force values whose scale
   // varies, so we self-calibrate line width against this.
   let maxForce = 1;
   // Count of pen-down events = strokes written. Used to gate scans on how much
@@ -51,7 +51,7 @@ export function useCanvas(canvasRef: Ref<HTMLCanvasElement | null>) {
     const w = Math.max(b.maxX - b.minX, 1e-6);
     const h = Math.max(b.maxY - b.minY, 1e-6);
     const dpr = window.devicePixelRatio || 1;
-    // Fit the writing to the canvas, but never magnify beyond maxScale — so a
+    // Fit the writing to the canvas, but never magnify beyond maxScale, so a
     // little writing stays a natural size instead of being blown up to fill the
     // pad. Anchored top-left so it grows down-and-right like writing on paper.
     const fitScale = Math.min((c.width * (1 - 2 * pad)) / w, (c.height * (1 - 2 * pad)) / h);
@@ -83,8 +83,8 @@ export function useCanvas(canvasRef: Ref<HTMLCanvasElement | null>) {
 
     let prev: { px: number; py: number } | null = null;
     for (const d of dots) {
-      // PEN_DOWN starts a stroke but carries placeholder (-1,-1) coordinates —
-      // use it only as a marker to break the line, never as a point. Skip
+      // PEN_DOWN starts a stroke but carries placeholder (-1,-1) coordinates.
+      // Use it only as a marker to break the line, never as a point. Skip
       // anything else without real coordinates (hover, page-info sentinels).
       if (d.dotType === DOT_DOWN) {
         prev = null;
@@ -174,7 +174,7 @@ export function useCanvas(canvasRef: Ref<HTMLCanvasElement | null>) {
 
     // Project the ink's bounding box into canvas pixels, pad it, clamp to the pad.
     // Sending only the written region instead of the whole white canvas is the
-    // dominant token saving — vision cost scales with pixel area, not bytes.
+    // dominant token saving, vision cost scales with pixel area, not bytes.
     const pad = settings.export.paddingPx;
     const p0 = project({ x: bbox.minX, y: bbox.minY } as PenDot, c, bbox);
     const p1 = project({ x: bbox.maxX, y: bbox.maxY } as PenDot, c, bbox);
@@ -184,7 +184,7 @@ export function useCanvas(canvasRef: Ref<HTMLCanvasElement | null>) {
     const sh = Math.min(c.height - sy, Math.abs(p1.py - p0.py) + pad * 2);
     if (sw < 1 || sh < 1) return c.toDataURL('image/jpeg', q);
 
-    // Downscale so the long edge never exceeds maxEdgePx — handwriting stays
+    // Downscale so the long edge never exceeds maxEdgePx, handwriting stays
     // legible well below that, and fewer pixels means fewer tokens. Never upscale.
     const scale = Math.min(1, settings.export.maxEdgePx / Math.max(sw, sh));
     const dw = Math.max(1, Math.round(sw * scale));

@@ -16,8 +16,8 @@
     <script>
       // web_pen_sdk's bundled deps (firebase, jszip) touch the Node globals
       // `global` and `process` at load time. Define them here in a classic inline
-      // script so they exist BEFORE any module — app code or optimized dependency
-      // chunk — is evaluated. (A module-level polyfill is not guaranteed to run
+      // script so they exist BEFORE any module, app code or optimized dependency
+      // chunk, is evaluated. (A module-level polyfill is not guaranteed to run
       // before Vite's pre-bundled dependency chunk, hence this lives in <head>.)
       window.global = window.global || window;
       window.process = window.process || { env: {} };

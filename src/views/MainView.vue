@@ -73,10 +73,10 @@ let flushing = false;
 function onDot(dot: PenDot) {
   canvas.addDot(dot);
   if (dot.dotType === DOT_HOVER) return;
-  // Writing again means you want to keep this page — call off any pending clear.
+  // Writing again means you want to keep this page, call off any pending clear.
   if (autoClearLeft.value > 0) cancelAutoClear();
   dirty = true;
-  // Active writing resumed — cancel any pending idle flush.
+  // Active writing resumed, cancel any pending idle flush.
   flushing = false;
   if (flushTimer) {
     window.clearTimeout(flushTimer);
@@ -93,7 +93,7 @@ function scheduleFeedback() {
 }
 
 // After the debounce fires with too little new ink, wait out a longer idle and
-// then scan anyway — so a finished answer is never skipped just because the last
+// then scan anyway, so a finished answer is never skipped just because the last
 // addition was small.
 function scheduleFlush() {
   if (flushTimer) window.clearTimeout(flushTimer);
@@ -134,7 +134,7 @@ async function runFeedback() {
     const img = canvas.exportImage();
     const text = await feedback.getFeedback(img, activeMode.value);
     if (gen !== generation) {
-      status.value = ''; // a reset happened mid-flight — drop this result
+      status.value = ''; // a reset happened mid-flight, drop this result
       return;
     }
     feedback.recordVerdict(text);
@@ -254,7 +254,7 @@ const connectionLabel = computed(() => {
       <canvas ref="canvasRef" class="pad" />
       <div v-if="autoClearLeft > 0" class="autoclear" role="status">
         <span class="ac-dot" />
-        <span class="ac-msg">Solved — clearing for the next problem in {{ autoClearLeft }}s</span>
+        <span class="ac-msg">Solved. Clearing for the next problem in {{ autoClearLeft }}s</span>
         <button class="ghost" @click="cancelAutoClear">Keep</button>
       </div>
     </main>
@@ -262,7 +262,7 @@ const connectionLabel = computed(() => {
     <footer class="status">
       <span class="mode">{{ activeMode.label }}</span>
       <span class="sep">·</span>
-      <span class="msg">{{ status || lastFeedback || 'Write on the pad — feedback appears here.' }}</span>
+      <span class="msg">{{ status || lastFeedback || 'Write on the pad. Feedback appears here.' }}</span>
     </footer>
   </div>
 </template>

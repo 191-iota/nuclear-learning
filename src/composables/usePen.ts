@@ -25,7 +25,7 @@ export interface UsePenOptions {
  *
  * The SDK exposes two global callback slots (`messageCallback`, `dotCallback`).
  * We wire them once here and forward dots to the caller. NoteServer / Firebase
- * and ncode page registration are deliberately not used — dots arrive in raw
+ * and ncode page registration are deliberately not used, dots arrive in raw
  * ncode coordinates and `useCanvas` normalises them.
  */
 export function usePen(options: UsePenOptions = {}) {
@@ -39,7 +39,7 @@ export function usePen(options: UsePenOptions = {}) {
   const T = PenMessageType as Record<string, unknown>;
 
   // PenHelper.scanPen() swallows a cancelled chooser / failed connect and resolves
-  // anyway, and there is no "scan failed" message — so a watchdog is the only
+  // anyway, and there is no "scan failed" message, so a watchdog is the only
   // reliable way to stop showing "scanning" when nothing connected.
   let scanWatchdog: number | undefined;
   function clearWatchdog() {
