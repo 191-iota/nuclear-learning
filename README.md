@@ -20,6 +20,17 @@ The same work starts on real Ncode paper, written with the Neo pen.
   <img src="docs/paper.jpg" alt="a problem written on the real Ncode notebook" width="440">
 </p>
 
+## Traditional vs. nuclear
+
+Most practice runs a slow loop: you finish a page, hand it in, and find out what went wrong long after, when you are simply shown the answer. This runs the loop as you write — the page is checked the moment you pause, and you get a one-line hint, so you find and fix the error yourself and keep going.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/loop-dark.svg">
+    <img src="docs/loop.svg" alt="traditional learning is a slow one-shot path that ends in the answer being shown; nuclear learning is a tight write, check, fix loop with a one-line hint" width="820">
+  </picture>
+</p>
+
 ## How it works
 
 The pen streams (x, y, pressure) points over Web Bluetooth. The app draws them onto a canvas, fitting the page coordinates to the drawing area as it goes. When you pause for a beat (a per-mode debounce), the page is cropped to just the ink and sent to the Claude API as a vision message under the active mode's system prompt. There is no separate OCR step, Claude reads the ink directly.

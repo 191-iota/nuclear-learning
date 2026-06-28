@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 356" font-family="'IBM Plex Sans', system-ui, -apple-system, sans-serif">
+<rect width="880" height="356" rx="14" fill="#16150f"/>
+<line x1="440" y1="40" x2="440" y2="316" stroke="#322f24" stroke-width="1" stroke-dasharray="3 5"/>
+<text x="224" y="34" text-anchor="middle" font-size="13" fill="#9b988a" font-family="'IBM Plex Mono', monospace" letter-spacing="0.04em">TRADITIONAL</text>
+<path d="M547.93 20.65A8.40 8.40 0 0 1 556.07 20.65L553.45 25.38A3.00 3.00 0 0 0 550.55 25.38Z" fill="#ece9dd"/><path d="M560.40 28.15A8.40 8.40 0 0 1 556.33 35.20L553.55 30.57A3.00 3.00 0 0 0 555.00 28.05Z" fill="#ece9dd"/><path d="M547.67 35.20A8.40 8.40 0 0 1 543.60 28.15L549.00 28.05A3.00 3.00 0 0 0 550.45 30.57Z" fill="#ece9dd"/><circle cx="552" cy="28" r="1.38" fill="#d8b24a"/>
+<text x="570" y="34" text-anchor="start" font-size="13" fill="#ece9dd" font-family="'IBM Plex Mono', monospace" font-weight="600" letter-spacing="0.04em">NUCLEAR · LEARNING</text>
+<rect x="99.0" y="73.0" width="250" height="46" rx="10" fill="#1f1d15" stroke="#322f24" stroke-width="1.4"/><text x="224" y="101" text-anchor="middle" font-size="15" fill="#ece9dd">write the whole page</text>
+<line x1="224" y1="119.0" x2="224" y2="146.0" stroke="#5a584c" stroke-width="1.6"/><path d="M224 153.0 L220 146.0 L228 146.0 Z" fill="#5a584c"/><text x="236" y="140.0" font-size="11.5" fill="#9b988a" font-family="'IBM Plex Mono', monospace">submit</text>
+<rect x="99.0" y="153.0" width="250" height="46" rx="10" fill="#1f1d15" stroke="#322f24" stroke-width="1.4"/><text x="224" y="181" text-anchor="middle" font-size="15" fill="#ece9dd">hand it in, wait</text>
+<line x1="224" y1="199.0" x2="224" y2="226.0" stroke="#5a584c" stroke-width="1.6"/><path d="M224 233.0 L220 226.0 L228 226.0 Z" fill="#5a584c"/><text x="236" y="220.0" font-size="11.5" fill="#9b988a" font-family="'IBM Plex Mono', monospace">hours – days</text>
+<rect x="99.0" y="233.0" width="250" height="46" rx="10" fill="#1f1d15" stroke="#322f24" stroke-width="1.4"/><text x="224" y="261" text-anchor="middle" font-size="15" fill="#ece9dd">marked · answer shown</text>
+<text x="224" y="324" text-anchor="middle" font-size="12.5" fill="#9b988a">feedback after the fact — you are shown the answer</text>
+<rect x="531.0" y="73.0" width="250" height="46" rx="10" fill="#1f1d15" stroke="#322f24" stroke-width="1.4"/><text x="656" y="101" text-anchor="middle" font-size="15" fill="#ece9dd">write one line</text>
+<line x1="656" y1="119.0" x2="656" y2="146.0" stroke="#5a584c" stroke-width="1.6"/><path d="M656 153.0 L652 146.0 L660 146.0 Z" fill="#5a584c"/><text x="668" y="140.0" font-size="11.5" fill="#9b988a" font-family="'IBM Plex Mono', monospace">pause</text>
+<rect x="531.0" y="153.0" width="250" height="46" rx="10" fill="#1f1d15" stroke="#d8b24a" stroke-width="1.8"/><circle cx="549.0" cy="176" r="3" fill="#d8b24a"/><text x="656" y="181" text-anchor="middle" font-size="15" fill="#ece9dd">read &amp; checked</text>
+<line x1="656" y1="199.0" x2="656" y2="226.0" stroke="#5a584c" stroke-width="1.6"/><path d="M656 233.0 L652 226.0 L660 226.0 Z" fill="#5a584c"/><text x="668" y="220.0" font-size="11.5" fill="#9b988a" font-family="'IBM Plex Mono', monospace">~1s · one-line hint</text>
+<rect x="531.0" y="233.0" width="250" height="46" rx="10" fill="#1f1d15" stroke="#322f24" stroke-width="1.4"/><text x="656" y="261" text-anchor="middle" font-size="15" fill="#ece9dd">you fix it yourself</text>
+<path d="M781.0 256 C839.0 256 839.0 96 787.0 96" fill="none" stroke="#d8b24a" stroke-width="1.8"/>
+<path d="M787.0 96 L795.0 92 L795.0 100 Z" fill="#d8b24a"/>
+<text transform="translate(831.0 176.0) rotate(90)" text-anchor="middle" font-size="11" fill="#d8b24a" font-family="'IBM Plex Mono', monospace">keep going</text>
+<text x="656" y="324" text-anchor="middle" font-size="12.5" fill="#9b988a">feedback inside the loop — you find the error</text>
+</svg>
