@@ -21,7 +21,8 @@
     "confirmModel": "claude-opus-4-8",
     "confirmEffort": "low",
     "routing": "manual",
-    "classifyModel": "claude-haiku-4-5"
+    "classifyModel": "claude-haiku-4-5",
+    "feedbackLang": "English"
   },
   "export": {
     "maxEdgePx": 896,

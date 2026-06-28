@@ -43,6 +43,18 @@ function normalize(text: string): string {
   return text.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+// Feedback language. `settings.api.feedbackLang` selects the language of the
+// learner-facing verdict. The control tokens OK and CORRECT stay literal so the
+// chime/silence logic keeps working; only the spoken hint is translated.
+const GERMAN_GRADING =
+  'Write the learner-facing verdict in German (Swiss Hochdeutsch, use "ss" not "ß"). Start an error hint with "Schritt [N]:" rather than "Step [N]:". Keep the control words OK and CORRECT exactly as written; never translate them.';
+const GERMAN_PLAIN = 'Write your reply to the learner in German (Swiss Hochdeutsch, use "ss" not "ß").';
+
+function langLine(mode: Mode): string {
+  if (settings.api.feedbackLang !== 'German') return '';
+  return mode.errorChecking === false ? GERMAN_PLAIN : GERMAN_GRADING;
+}
+
 /**
  * Sends the current page to Claude and delivers the verdict.
  *
@@ -73,8 +85,11 @@ export function useFeedback() {
   let complexity = '';
 
   function buildContext(mode: Mode): string {
+    const lang = langLine(mode);
     if (history.length === 0) {
-      return 'This is the first scan of this page of handwritten work. Assess it per your instructions.';
+      const first =
+        'This is the first scan of this page of handwritten work. Assess it per your instructions.';
+      return lang ? `${first}\n\n${lang}` : first;
     }
     const list = history.map((h, i) => `${i + 1}. ${h}`).join('\n');
     const lines = [
@@ -92,6 +107,7 @@ export function useFeedback() {
         'If everything, including the new work, is valid, respond with exactly: CORRECT',
       );
     }
+    if (lang) lines.push('', lang);
     return lines.join('\n');
   }
 
@@ -202,6 +218,7 @@ export function useFeedback() {
         'No solution has been worked out for the current problem yet. Identify the problem the learner is working on, solve it completely yourself, and return the full worked solution in "solution" with a short label in "problem". If the problem statement is still incomplete or you cannot determine it, leave "solution" empty and answer OK in "verdict".',
       );
     }
+    if (settings.api.feedbackLang === 'German') lines.push('', GERMAN_GRADING);
     return lines.join('\n');
   }
 
@@ -444,14 +461,14 @@ export function useFeedback() {
   // Identity used to suppress replayed audio. A "Step N: ..." correction keys on
   // the step, so a reworded hint for the same unfixed step is not replayed.
   function deliveryKey(text: string): string {
-    const step = /^\s*(step\s+\d+)\b/i.exec(text);
+    const step = /^\s*((?:step|schritt)\s+\d+)\b/i.exec(text);
     return step ? step[1].toLowerCase().replace(/\s+/g, ' ') : normalize(text);
   }
 
   function speak(text: string): void {
     if (typeof window === 'undefined' || !('speechSynthesis' in window) || !text) return;
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = settings.audio.voiceLang;
+    utterance.lang = settings.api.feedbackLang === 'German' ? 'de-DE' : settings.audio.voiceLang;
     utterance.rate = settings.audio.rate;
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);

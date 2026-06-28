@@ -133,6 +133,7 @@ Everything tunable lives in `config/settings.json`, and can also be changed live
 |---|---|
 | `api.solveModel` / `verifyModel` / `confirmModel` | the per-role models: a strong model solves and confirms, a cheaper one runs the routine checks |
 | `api.maxTokens` | room for the model's reasoning pass plus the one-line verdict |
+| `api.feedbackLang` | the language of the spoken and shown hint, English or German. German also speaks with a German voice |
 | `canvas.maxScale` | zoom cap, higher renders your writing bigger and lower renders it smaller |
 | `canvas.pressureMultiplier` | how much stroke width responds to pen pressure |
 | `audio.voiceLang`, `audio.rate` | spoken-feedback voice and speed |

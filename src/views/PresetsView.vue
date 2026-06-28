@@ -25,17 +25,24 @@ const STYLES = ['spoken', 'chime', 'both'];
         </summary>
         <div class="config-body">
           <div class="eng-row">
-            <div class="field span-3">
+            <div class="field span-2">
               <label>Routing</label>
               <select v-model="settings.api.routing">
                 <option value="manual">Manual (tiered)</option>
                 <option value="auto">Automatic (by complexity)</option>
               </select>
             </div>
-            <div class="field span-3">
+            <div class="field span-2">
               <label>Classify model (auto)</label>
               <select v-model="settings.api.classifyModel">
                 <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
+              </select>
+            </div>
+            <div class="field span-2">
+              <label>Feedback language</label>
+              <select v-model="settings.api.feedbackLang">
+                <option value="English">English</option>
+                <option value="German">German</option>
               </select>
             </div>
           </div>
