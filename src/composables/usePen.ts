@@ -72,6 +72,9 @@ export function usePen(options: UsePenOptions = {}) {
         state.battery = args.Battery;
       }
     }
+    // On any successful connection (manual OR auto), wire the pen for automatic
+    // reconnection so a later power-cycle / out-of-range drop comes back on its own.
+    if (state.connected) connectedDevices().forEach(wireAutoReconnect);
   };
 
   PenHelper.dotCallback = (_mac: unknown, dot: any) => {
@@ -103,6 +106,111 @@ export function usePen(options: UsePenOptions = {}) {
     }
   }
 
+  // Devices already wired for auto-reconnect (so listeners don't stack), and the set
+  // of devices a reconnect poll is currently running for (so loops don't stack).
+  const wired = new Set<any>();
+  const reconnecting = new Set<any>();
+
+  // The BluetoothDevice objects behind the SDK's currently-connected controllers.
+  function connectedDevices(): any[] {
+    const pens = (PenHelper as any).pens as any[] | undefined;
+    if (!Array.isArray(pens)) return [];
+    return pens.map((p) => p?.device).filter(Boolean);
+  }
+
+  async function tryConnect(device: any): Promise<void> {
+    try {
+      // connectDevice does NOT call requestDevice, so it needs no user gesture; it is
+      // a no-op if the device is already connected or connecting.
+      await PenHelper.connectDevice(device);
+    } catch {
+      /* out of range / powered off — the reconnect poll will try again */
+    }
+  }
+
+  // Keep retrying gatt.connect() on a device we already hold until the pen comes back
+  // in range (you power it on again) or we give up after ~2 minutes. This is what makes
+  // a power-cycle reconnect on its own with no chooser: gatt.connect() on a device the
+  // browser already knows this session needs no user gesture.
+  function reconnectLoop(device: any): void {
+    if (reconnecting.has(device)) return;
+    reconnecting.add(device);
+    let attempts = 0;
+    const tick = async () => {
+      if (state.connected || device.gatt?.connected) {
+        reconnecting.delete(device);
+        return;
+      }
+      attempts += 1;
+      await tryConnect(device);
+      if (state.connected || device.gatt?.connected || attempts >= 40) {
+        reconnecting.delete(device);
+        return;
+      }
+      window.setTimeout(tick, 3000);
+    };
+    void tick();
+  }
+
+  function wireAutoReconnect(device: any): void {
+    if (wired.has(device)) return;
+    wired.add(device);
+    // Reconnect whenever the pen drops (out of range, sleep, power-off).
+    device.addEventListener('gattserverdisconnected', () => {
+      state.connected = false;
+      state.battery = null;
+      reconnectLoop(device);
+    });
+    // Where the browser supports it, also connect the moment the pen starts
+    // advertising. Best-effort; the reconnect poll above is the reliable path.
+    if (typeof device.watchAdvertisements === 'function') {
+      device.addEventListener('advertisementreceived', () => {
+        if (!state.connected) void tryConnect(device);
+      });
+      try {
+        const p = device.watchAdvertisements();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch {
+        /* advertisement watching not available here */
+      }
+    }
+  }
+
+  /**
+   * Reconnect to a pen this origin was already granted, without showing the chooser.
+   * `requestDevice` (the Connect button) needs a click; `getDevices` + GATT connect do
+   * not, so this can run on page load. It is a silent no-op before any pen has ever
+   * been paired (getDevices returns nothing) or on browsers without the permitted-
+   * device API.
+   */
+  async function autoConnect(): Promise<void> {
+    if (!state.supported || state.connected || state.scanning) return;
+    const bt = navigator.bluetooth as any;
+    if (typeof bt.getDevices !== 'function') return;
+    let devices: any[] = [];
+    try {
+      devices = await bt.getDevices();
+    } catch {
+      return;
+    }
+    if (import.meta.env.DEV) {
+      console.debug('[nuclear-learning] autoConnect: getDevices() →', devices.length, 'remembered pen(s)');
+    }
+    if (!devices.length) return;
+    state.scanning = true;
+    for (const device of devices) {
+      wireAutoReconnect(device);
+      await tryConnect(device);
+    }
+    // Drop the "scanning" indicator if nothing connected within the grace period; an
+    // advertisement watcher (where supported) can still connect later.
+    clearWatchdog();
+    scanWatchdog = window.setTimeout(() => {
+      scanWatchdog = undefined;
+      if (!state.connected) state.scanning = false;
+    }, 6000);
+  }
+
   function disconnect(): void {
     const pens = (PenHelper as any).pens as unknown[] | undefined;
     if (Array.isArray(pens)) {
@@ -118,5 +226,5 @@ export function usePen(options: UsePenOptions = {}) {
     state.battery = null;
   }
 
-  return { state, scanPen, disconnect };
+  return { state, scanPen, autoConnect, disconnect };
 }

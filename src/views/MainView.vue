@@ -137,6 +137,7 @@ async function runFeedback() {
       status.value = ''; // a reset happened mid-flight, drop this result
       return;
     }
+    if (import.meta.env.DEV) console.debug('[nuclear-learning] verdict:', JSON.stringify(text));
     feedback.recordVerdict(text);
     lastFeedback.value = feedback.isQuiet(text) ? 'Looks good so far…' : text;
     feedback.deliver(text, activeMode.value);
@@ -217,6 +218,8 @@ onMounted(() => {
   } else {
     window.addEventListener('resize', canvas.resize);
   }
+  // Silently reconnect to an already-paired pen (no chooser); no-op on first visit.
+  void pen.autoConnect();
 });
 
 onBeforeUnmount(() => {
