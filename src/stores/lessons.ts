@@ -1,4 +1,5 @@
 import { reactive } from 'vue';
+import { generateLessonCard } from '@/lessonCard';
 
 /**
  * Lessons = your own corrected mistakes, captured for free.
@@ -26,6 +27,12 @@ export interface Lesson {
   // `mistake`.
   wrong?: string;
   right?: string;
+  // Tailored review card written by a dedicated Sonnet call (see lessonCard.ts):
+  // `front` is a specific recall question, `back` the answer, both with math in LaTeX.
+  // Optional; cards captured before this, or when the call failed, fall back to the
+  // correction / hint. `regenerateCards()` backfills them.
+  front?: string;
+  back?: string;
   // Spaced-repetition state (Leitner box system).
   box: number; // 0..MAX_BOX, higher = longer interval
   due: number; // next review time (ms epoch)
@@ -93,12 +100,16 @@ export function addLesson(input: {
   solution: string;
   wrong?: string;
   right?: string;
+  front?: string;
+  back?: string;
 }): void {
   const mistake = input.mistake.trim();
   if (!mistake) return;
   const problem = input.problem.trim();
   const wrong = (input.wrong ?? '').slice(0, MAX_SOLUTION);
   const right = (input.right ?? '').slice(0, MAX_SOLUTION);
+  const front = (input.front ?? '').slice(0, MAX_SOLUTION);
+  const back = (input.back ?? '').slice(0, MAX_SOLUTION);
 
   const dup = lessonStore.lessons.find(
     (l) => l.mode === input.mode && norm(l.mistake) === norm(mistake) && norm(l.problem) === norm(problem),
@@ -110,6 +121,8 @@ export function addLesson(input: {
     if (input.solution) dup.solution = input.solution.slice(0, MAX_SOLUTION);
     if (wrong) dup.wrong = wrong;
     if (right) dup.right = right;
+    if (front) dup.front = front;
+    if (back) dup.back = back;
     persist();
     return;
   }
@@ -125,6 +138,8 @@ export function addLesson(input: {
     solution: input.solution.slice(0, MAX_SOLUTION),
     wrong,
     right,
+    front,
+    back,
     box: 0,
     due: Date.now(), // due immediately for the first review
     reps: 0,
@@ -175,6 +190,36 @@ export function dueLessons(now = Date.now()): Lesson[] {
     .sort((a, b) => a.box - b.box || a.due - b.due);
 }
 
+/**
+ * Backfill tailored cards onto stored lessons by calling the Sonnet card writer for
+ * each one. By default it only touches lessons without a `front` (the old cards), so
+ * it is cheap and safe to run repeatedly; pass `force` to rewrite every card. Runs
+ * sequentially and persists after each so progress is never lost. Returns how many it
+ * filled. Exposed as `__nlLessons.rebuild()`.
+ */
+export async function regenerateCards(force = false): Promise<number> {
+  const targets = lessonStore.lessons.filter((l) => force || !l.front);
+  let done = 0;
+  for (const l of targets) {
+    const card = await generateLessonCard({
+      problem: l.problem,
+      mistake: l.mistake,
+      solution: l.solution,
+      wrong: l.wrong,
+      right: l.right,
+      mode: l.mode,
+    });
+    if (card && (card.front || card.back)) {
+      l.front = card.front.slice(0, MAX_SOLUTION);
+      l.back = card.back.slice(0, MAX_SOLUTION);
+      done += 1;
+      persist();
+    }
+  }
+  console.info(`[nuclear-learning] rebuilt ${done}/${targets.length} lesson card(s)`);
+  return done;
+}
+
 export function lessonStats(now = Date.now()) {
   let due = 0;
   let mastered = 0;
@@ -191,6 +236,7 @@ if (typeof window !== 'undefined') {
     all: () => lessonStore.lessons.slice(),
     due: () => dueLessons(),
     stats: () => lessonStats(),
+    rebuild: (force = false) => regenerateCards(force),
     clear: clearLessons,
   };
 }

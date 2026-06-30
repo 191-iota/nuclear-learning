@@ -7,12 +7,27 @@ import {
   reviewLesson,
   removeLesson,
   clearLessons,
+  regenerateCards,
   type Lesson,
 } from '@/stores/lessons';
 import MathText from '@/components/MathText.vue';
 
 const stats = computed(() => lessonStats());
 const all = computed(() => [...lessonStore.lessons].sort((a, b) => b.ts - a.ts));
+
+// Cards captured before the tailored-card writer existed (or when its call failed)
+// have no `front`. Offer a one-click rebuild that backfills them on Sonnet.
+const needsCard = computed(() => lessonStore.lessons.filter((l) => !l.front).length);
+const rebuilding = ref(false);
+async function rebuild() {
+  if (rebuilding.value) return;
+  rebuilding.value = true;
+  try {
+    await regenerateCards();
+  } finally {
+    rebuilding.value = false;
+  }
+}
 
 // Review session, active recall over the due cards: show the problem, you try to
 // recall the slip, then reveal and grade. Spaced repetition schedules the rest.
@@ -74,6 +89,9 @@ function statusLabel(l: Lesson): string {
       <h2>Lessons</h2>
       <span class="muted mono" style="font-size: 0.72rem">your own corrected mistakes</span>
       <span class="spacer" />
+      <button v-if="needsCard" class="ghost" :disabled="rebuilding" @click="rebuild">
+        {{ rebuilding ? 'Rebuilding…' : `Rebuild ${needsCard} card${needsCard > 1 ? 's' : ''}` }}
+      </button>
       <button v-if="all.length" class="ghost danger" @click="clearLessons">Clear all</button>
     </div>
 
@@ -93,15 +111,24 @@ function statusLabel(l: Lesson): string {
 
         <div class="cue">
           <div v-if="current.problem" class="problem mono"><MathText :text="current.problem" /></div>
-          <div class="ask">Recall the mistake you fixed here.</div>
-          <div class="hint muted">Bring the mistake and the fix to mind before you reveal it.</div>
+          <div class="ask">
+            <MathText v-if="current.front" :text="current.front" />
+            <template v-else>Recall the mistake you fixed here.</template>
+          </div>
+          <div class="hint muted">
+            {{ current.front ? 'Answer it, then reveal.' : 'Bring the mistake and the fix to mind before you reveal it.' }}
+          </div>
         </div>
 
         <button v-if="!revealed" class="primary reveal" @click="revealed = true">Reveal</button>
 
         <template v-else>
           <div class="answer">
-            <template v-if="current.wrong || current.right">
+            <template v-if="current.back">
+              <div class="answer-k mono">answer</div>
+              <div class="fix"><MathText :text="current.back" /></div>
+            </template>
+            <template v-else-if="current.wrong || current.right">
               <div class="answer-k mono">what went wrong</div>
               <div class="mistake"><MathText :text="current.wrong || current.mistake" /></div>
               <template v-if="current.right">

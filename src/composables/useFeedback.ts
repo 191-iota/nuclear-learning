@@ -6,6 +6,7 @@ import { addLesson } from '@/stores/lessons';
 import { modelInfo } from '@/models';
 import { applySkillPacket, type SkillPacket, type KCObservation } from '@/stores/skills';
 import { KC_IDS, SKILL_ASSESSOR } from '@/kc';
+import { generateLessonCard } from '@/lessonCard';
 
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 
@@ -199,24 +200,56 @@ export function useFeedback() {
     return '';
   }
 
-  // Zero-cost lesson capture: the moment a problem turns CORRECT after an error,
-  // the error verdict (and, for caching modes, the problem label + worked
-  // solution) is already in hand from this very scan, log it for review. One per
-  // problem; nothing is captured when the work was right the first time.
+  // Lesson capture: the moment a problem turns CORRECT after an error, the error and
+  // the worked solution are already in hand from this scan. One per problem; nothing
+  // is captured when the work was right the first time. The card itself is written by
+  // a dedicated Sonnet call (a specific recall question, not the cryptic live nudge);
+  // that runs fire-and-forget so the chime is never delayed, and the inputs are snap-
+  // shotted now because the session state may move on before it resolves.
   function maybeCaptureLesson(verdict: string, mode: Mode): void {
     if (lessonCaptured || mode.errorChecking === false) return;
     if (!isCorrect(verdict)) return;
     const mistake = lastError();
     if (!mistake) return;
     lessonCaptured = true;
-    addLesson({
-      mode: mode.id,
+    void buildAndAddLesson({
+      modeId: mode.id,
       modeLabel: mode.label,
       problem: cachedProblem,
       mistake,
       solution: cachedSolution,
       wrong: lastCorrection?.wrong ?? '',
       right: lastCorrection?.right ?? '',
+    });
+  }
+
+  async function buildAndAddLesson(input: {
+    modeId: string;
+    modeLabel: string;
+    problem: string;
+    mistake: string;
+    solution: string;
+    wrong: string;
+    right: string;
+  }): Promise<void> {
+    const card = await generateLessonCard({
+      problem: input.problem,
+      mistake: input.mistake,
+      solution: input.solution,
+      wrong: input.wrong,
+      right: input.right,
+      mode: input.modeId,
+    });
+    addLesson({
+      mode: input.modeId,
+      modeLabel: input.modeLabel,
+      problem: input.problem,
+      mistake: input.mistake,
+      solution: input.solution,
+      wrong: input.wrong,
+      right: input.right,
+      front: card?.front ?? '',
+      back: card?.back ?? '',
     });
   }
 
