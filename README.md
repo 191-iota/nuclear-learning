@@ -14,6 +14,8 @@ Real-time feedback for handwritten work. You write on paper with a Neo Smartpen.
   <img src="docs/app.png" alt="the app: a problem on the pad with the app's hint in the status bar" width="880">
 </p>
 
+That live loop is the heart of it. Around it the app keeps the mistakes you fix so you can review them later, and reads the skills behind your work to build a picture of where you are strong and where you are weak.
+
 The same work starts on real Ncode paper, written with the Neo pen.
 
 <p align="center">
@@ -71,19 +73,33 @@ To add one, append an object to `config/modes.json`, or build it in the Presets 
 
 ## The interface
 
-The app is three tabs. The pad is where you work: connect the pen, choose a mode, and write. It keeps the controls to a thin strip and gives the rest to the page.
+The app is five tabs. The pad is where you work: connect the pen, choose a mode, and write. It keeps the controls to a thin strip and gives the rest to the page.
 
 <p align="center">
   <img src="docs/ui-pad.png" alt="the pad tab: a thin toolbar over a blank writing area" width="860">
 </p>
 
-Usage logs every scan's token cost and charts it per page, so a change to a model or a setting moves the number live. It has a dark theme too.
+Two of the other tabs look back at what you have done, and are described below: Lessons reviews the mistakes you fixed, and Progress tracks the skills behind your work. Usage logs every scan's token cost and charts it per page, so a change to a model or a setting moves the number live. It has a dark theme too.
 
 Presets is where the modes live. A mode's prompt, debounce, feedback style, and whether it caches a solved answer are all editable in place, with the engine settings, model, effort, image size, and prices, folded into the panel at the top. The defaults still come from `config/modes.json` and `config/settings.json`; this just edits them without a reload.
 
 <p align="center">
   <img src="docs/ui-presets.png" alt="the presets tab: a math preset expanded for editing" width="860">
 </p>
+
+## Lessons
+
+When the grader catches a mistake and you fix it so the problem turns correct, that mistake is kept here to review later. It costs nothing, the error and the worked solution are already in hand from the scan that judged you. Each card holds what you got wrong and the correct version, with the mathematics typeset, so you review the actual fix rather than the one-line nudge the app spoke at the time.
+
+Review is active recall on a spacing schedule. A card shows the problem first, you bring the mistake and the fix to mind, then you reveal and grade yourself. Cards you remember rest longer before they come back, cards you miss return soon. Re-testing your own corrected mistake right after the feedback is the kind of correction that sticks, so the deck is built from your own errors rather than a generic question bank.
+
+## Progress
+
+Every problem you solve says something about which skills you have, and Progress reads that signal. When a problem resolves, the same model call that signs off the result also tags the work against a fixed map of math skills, from the atomic ones like sign handling and rearranging up through the chain rule, Gaussian elimination, and proof by induction. There is no extra request, the tag rides a call that already runs.
+
+A skill rises when you use it cleanly, dips when you slip on it, and fades when you leave it untouched, the way recall actually behaves. The tab shows mastery by domain, how it moves over time, and three short lists: what to drill next, what is strongest, and what is going stale. A domain only reads as mastered once you have shown most of the skills in it, so working two of eighteen calculus skills does not light the whole bar.
+
+All of it is a small local calculation over those tags, so it is free and updates live. It can be turned off in Presets if you would rather the model only grade.
 
 ## What it costs
 
@@ -99,7 +115,7 @@ Nine scans of that page came to about nine cents.
   <img src="docs/cost.png" alt="usage for the page: 9 scans, 19.5k input and 796 output tokens, $0.089" width="300">
 </p>
 
-This holds because the work is split across models by how hard each part is. The first scan that can read a complete problem is solved once, in full, by the strong model, and the worked answer is kept as a short checklist. Every later scan compares the work so far against that checklist, so it runs on a cheaper, faster model. When that cheap pass thinks the answer is finished, the strong model takes one last look to confirm the result before the chime. If it disagrees, the cheap model is dropped for the rest of that problem. The strong model runs twice, to work the problem out and to sign off the result, and the cheap one carries the repetitive middle.
+This holds because the work is split across models by how hard each part is. The first scan that can read a complete problem is solved once, in full, by the strong model, and the worked answer is kept as a short checklist. Every later scan compares the work so far against that checklist, so it runs on a cheaper, faster model. When that cheap pass thinks the answer is finished, the strong model takes one last look to confirm the result before the chime. If it disagrees, the strong model's hint is delivered instead, while the cheap pass keeps carrying the later scans and the strong model re-checks any future finish. The strong model runs twice, to work the problem out and to sign off the result, and the cheap one carries the repetitive middle. Those two strong calls also carry the skill tagging that feeds the Progress tab and the correction that feeds Lessons, so neither costs an extra request.
 
 Two things keep the scan count down. A scan only fires once enough new ink has arrived, so pausing to think spends nothing, and once a problem is solved it is never solved again. Most of what is left is input, the cropped image and the prompt re-sent on each scan, so a smaller image or fewer scans move the number more than anything on the output side.
 
@@ -121,7 +137,7 @@ cp .env.example .env   # then put your Anthropic API key in .env
 npm run dev
 ```
 
-Open the printed localhost URL, click Connect pen, pick a mode, and start writing. Pairing only works over `localhost` or `https`, and on macOS the browser needs Bluetooth permission (System Settings, Privacy and Security, Bluetooth).
+Open the printed localhost URL, click Connect pen, pick a mode, and start writing. Pairing only works over `localhost` or `https`, and on macOS the browser needs Bluetooth permission (System Settings, Privacy and Security, Bluetooth). Once a pen is paired it reconnects on its own, so powering it off and on, or stepping out of range and back, comes back without the chooser.
 
 The key is read from `VITE_ANTHROPIC_API_KEY` and used directly from the browser, so it is visible to anyone who can open the page. Keep this local and use a key you can rotate.
 
@@ -134,6 +150,7 @@ Everything tunable lives in `config/settings.json`, and can also be changed live
 | `api.solveModel` / `verifyModel` / `confirmModel` | the per-role models: a strong model solves and confirms, a cheaper one runs the routine checks |
 | `api.maxTokens` | room for the model's reasoning pass plus the one-line verdict |
 | `api.feedbackLang` | the language of the spoken and shown hint, English or German. German also speaks with a German voice |
+| `api.trackSkills` | whether a solved problem is tagged against the skill map for the Progress tab. On by default; turning it off stops the tracking and the extra output |
 | `canvas.maxScale` | zoom cap, higher renders your writing bigger and lower renders it smaller |
 | `canvas.pressureMultiplier` | how much stroke width responds to pen pressure |
 | `audio.voiceLang`, `audio.rate` | spoken-feedback voice and speed |
