@@ -4,20 +4,64 @@ import type { Mode } from '@/types';
 import { recordUsage, newPage, type Role } from '@/stores/usage';
 import { addLesson } from '@/stores/lessons';
 import { modelInfo } from '@/models';
+import { applySkillPacket, type SkillPacket, type KCObservation } from '@/stores/skills';
+import { KC_IDS, SKILL_ASSESSOR } from '@/kc';
 
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 
 // Structured reply for solution-caching modes: a learner-facing one-line `verdict`
 // plus the worked `solution` (internal, cached) and a `problem` label so the cache
-// knows which problem it belongs to.
+// knows which problem it belongs to. `correction` is filled only when a problem
+// turns CORRECT after a flagged mistake: a clean, LaTeX-formatted statement of what
+// was wrong and the right version, stored on the lesson for later review (never
+// spoken). It is required by the schema but left empty ("") when not applicable,
+// the same way `solution` is empty on a verify scan.
 const SOLUTION_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['problem', 'solution', 'verdict'],
+  required: ['problem', 'solution', 'verdict', 'correction'],
   properties: {
     problem: { type: 'string' },
     solution: { type: 'string' },
     verdict: { type: 'string' },
+    correction: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['wrong', 'right'],
+      properties: {
+        wrong: { type: 'string' },
+        right: { type: 'string' },
+      },
+    },
+  },
+};
+
+// Tagging schema: SOLUTION_SCHEMA plus the skill-mastery fields. Used only on the
+// Opus calls that already fire once per problem (solve + confirm/resolution), so the
+// skill map costs zero extra requests. The cheap per-scan verify uses SOLUTION_SCHEMA
+// instead, so the 125-id enum is never sent on the repetitive middle scans. `signal`
+// carries a 'none' sentinel for membership-only (in-progress) emissions; `difficulty`
+// is always present (the model gives its best estimate even when skills is empty).
+const SKILL_SOLUTION_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['problem', 'solution', 'verdict', 'correction', 'difficulty', 'skills'],
+  properties: {
+    ...SOLUTION_SCHEMA.properties,
+    difficulty: { enum: [1, 2, 3, 4, 5] },
+    skills: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'role', 'signal'],
+        properties: {
+          id: { enum: KC_IDS },
+          role: { enum: ['core', 'support'] },
+          signal: { enum: ['none', 'clean', 'shaky', 'wrong'] },
+        },
+      },
+    },
   },
 };
 
@@ -73,14 +117,24 @@ export function useFeedback() {
   let lastDelivered = '';
   // Session-scoped worked solution for the current problem. The solve model works
   // it out once and this LATCHES, later scans verify against it on the cheap model
-  // and it is never re-solved until resetSession (Clear). `haikuUnreliable` flips on
-  // if the confirm model overturns the cheap model's CORRECT, then the rest of THIS
-  // problem verifies on the confirm model.
+  // and it is never re-solved until resetSession (Clear).
   let cachedSolution = '';
   let cachedProblem = '';
-  let haikuUnreliable = false;
   // One lesson per problem: set once a corrected mistake is logged this session.
   let lessonCaptured = false;
+  // Latest learner-facing correction emitted on this page (what was wrong + the
+  // right version, LaTeX). Set by the resolving Opus call, read by the lesson
+  // capture so the review card shows a real, rendered correction, not the cryptic
+  // live hint. Cleared on resetSession.
+  let lastCorrection: { wrong: string; right: string } | null = null;
+  // Skill-map capture state for the page. `skillMembership` is the id+role set the
+  // SOLVE call tagged (no signal yet); `skillApplied` latches once real per-skill
+  // signal has been deposited; `pageReachedCorrect` and `lastSteps` feed the resolve
+  // and abandon paths. None of this is sent back to the model.
+  let skillMembership: SkillPacket | null = null;
+  let skillApplied = false;
+  let pageReachedCorrect = false;
+  let lastSteps = 0;
   // Automatic-routing only: cached difficulty class for the current problem.
   let complexity = '';
 
@@ -161,7 +215,36 @@ export function useFeedback() {
       problem: cachedProblem,
       mistake,
       solution: cachedSolution,
+      wrong: lastCorrection?.wrong ?? '',
+      right: lastCorrection?.right ?? '',
     });
+  }
+
+  // ---- skill-map capture helpers ----
+  type Reply = Awaited<ReturnType<typeof callModel>>;
+
+  // Number of checklist lines in the cached solution, an objective difficulty signal.
+  function solutionSteps(): number {
+    return cachedSolution.split('\n').filter((s) => s.trim()).length;
+  }
+
+  // The SOLVE call's tags become the page's sticky membership (id + role, no signal).
+  // It is the fallback the abandon hook deposits against if the page never resolves.
+  function recordMembership(r: Reply): void {
+    if (!settings.api.trackSkills || skillMembership || !r.skills?.length) return;
+    skillMembership = {
+      difficulty: r.difficulty,
+      skills: r.skills.map((o) => ({ id: o.id, role: o.role })),
+    };
+  }
+
+  // A resolving CORRECT carries real per-skill signal; fold it into the estimator once.
+  function captureSkills(r: Reply): void {
+    pageReachedCorrect = true;
+    if (settings.api.trackSkills && !skillApplied && r.skills?.length) {
+      applySkillPacket({ difficulty: r.difficulty, skills: r.skills }, lastSteps, Date.now());
+      skillApplied = true;
+    }
   }
 
   // Original one-shot path: solve and judge every scan. Used by modes that don't
@@ -212,10 +295,13 @@ export function useFeedback() {
         cachedSolution,
         '',
         'The image shows the learner\'s current work. Verify RESULT-FIRST: if their final answer matches the known solution, respond CORRECT even if an earlier line looks off; only flag a step when one of their results actually disagrees with the known solution, and read what they actually wrote rather than guessing a formula. Do not re-derive; leave "solution" empty.',
+        'Once a finished answer is on the page — a double underline, a box, the word done/fertig/Antwort, or a direct answer covering every part of what was asked — you MUST grade it on THIS scan: CORRECT when it matches the known solution, otherwise the first diverging step. Do not answer OK once a finished answer is present; OK is only for work still visibly in progress or genuinely unreadable.',
+        'CORRECTION (stored for the learner\'s later review, never spoken): if your verdict is CORRECT and the earlier feedback above had flagged a mistake the learner has since fixed, fill `correction.wrong` with the specific error they made and `correction.right` with the corrected version, each ONE short line, writing every mathematical expression in LaTeX between single $ delimiters (for example $\\overline{a\\cdot b}=\\bar a+\\bar b$). This field is for review only, so naming the right answer here is fine and does not change your verdict. If there was no earlier mistake, leave both empty.',
       );
     } else {
       lines.push(
         'No solution has been worked out for the current problem yet. Identify the problem the learner is working on, solve it completely yourself, and return the full worked solution in "solution" with a short label in "problem". If the problem statement is still incomplete or you cannot determine it, leave "solution" empty and answer OK in "verdict".',
+        'If a finished answer is ALREADY on the page (double underline, box, done/fertig/Antwort, or a direct answer covering every part asked), grade it on THIS scan against the solution you just derived: CORRECT when it matches, otherwise the first diverging step. Answer OK only while the work is still visibly unfinished.',
       );
     }
     if (settings.api.feedbackLang === 'German') lines.push('', GERMAN_GRADING);
@@ -223,7 +309,10 @@ export function useFeedback() {
   }
 
   // One structured call to a given model. Cheap models (e.g. Haiku) don't take the
-  // effort parameter or adaptive thinking, so those are omitted for them.
+  // effort parameter or adaptive thinking, so those are omitted for them. When
+  // `tagSkills` is set the call also carries the constant skill-assessor block (cached)
+  // and the wider tagging schema, so the reply includes difficulty + per-skill tags;
+  // the routine cheap-verify scans pass `tagSkills` false to stay lean.
   async function callModel(
     model: string,
     effort: string | null,
@@ -232,15 +321,34 @@ export function useFeedback() {
     mediaType: ImageMediaType,
     mode: Mode,
     text: string,
-  ): Promise<{ problem: string; solution: string; verdict: string }> {
+    tagSkills = false,
+  ): Promise<{
+    problem: string;
+    solution: string;
+    verdict: string;
+    correction: { wrong: string; right: string };
+    difficulty?: number;
+    skills?: KCObservation[];
+  }> {
     const info = modelInfo(model);
     const useEffort = info.effort && !!effort;
-    const output_config: any = { format: { type: 'json_schema', schema: SOLUTION_SCHEMA } };
+    const tag = tagSkills && settings.api.trackSkills;
+    const output_config: any = {
+      format: { type: 'json_schema', schema: tag ? SKILL_SOLUTION_SCHEMA : SOLUTION_SCHEMA },
+    };
     if (useEffort) output_config.effort = effort;
+    // The skill-assessor block is byte-identical across every call and mode, so it sits
+    // first with cache_control and is a cache-prefix read after the first call.
+    const system: any = tag
+      ? [
+          { type: 'text', text: SKILL_ASSESSOR, cache_control: { type: 'ephemeral' } },
+          { type: 'text', text: mode.systemPrompt },
+        ]
+      : mode.systemPrompt;
     const params: any = {
       model,
       max_tokens: settings.api.maxTokens,
-      system: mode.systemPrompt,
+      system,
       messages: [
         {
           role: 'user',
@@ -261,16 +369,42 @@ export function useFeedback() {
       .map((b) => b.text as string)
       .join('')
       .trim();
+    let parsed: any;
     try {
-      const p = JSON.parse(out) as { problem?: string; solution?: string; verdict?: string };
-      return {
-        problem: (p.problem ?? '').trim(),
-        solution: (p.solution ?? '').trim(),
-        verdict: (p.verdict ?? '').trim(),
-      };
+      parsed = JSON.parse(out);
     } catch {
-      return { problem: '', solution: '', verdict: out };
+      return { problem: '', solution: '', verdict: out, correction: { wrong: '', right: '' } };
     }
+    const correction = {
+      wrong: (parsed?.correction?.wrong ?? '').trim(),
+      right: (parsed?.correction?.right ?? '').trim(),
+    };
+    // Latch the latest non-empty correction for the page. The resolving Opus call is the
+    // one instructed to fill it, so by the time a problem turns CORRECT this holds that
+    // call's correction; an empty one never clobbers a real one.
+    if (correction.wrong || correction.right) lastCorrection = correction;
+    // Tag read is decoupled and best-effort, so a malformed skills array can never block
+    // the verdict / chime.
+    let difficulty: number | undefined;
+    let skills: KCObservation[] | undefined;
+    try {
+      if (typeof parsed.difficulty === 'number') difficulty = parsed.difficulty;
+      if (Array.isArray(parsed.skills)) {
+        skills = parsed.skills
+          .filter((s: any) => s && typeof s.id === 'string' && (s.role === 'core' || s.role === 'support'))
+          .map((s: any) => ({ id: s.id, role: s.role, signal: s.signal }));
+      }
+    } catch {
+      /* tagging is best-effort */
+    }
+    return {
+      problem: (parsed.problem ?? '').trim(),
+      solution: (parsed.solution ?? '').trim(),
+      verdict: (parsed.verdict ?? '').trim(),
+      correction,
+      difficulty,
+      skills,
+    };
   }
 
   // Automatic routing: a cheap model judges whether the posed problem is simple or
@@ -323,12 +457,14 @@ export function useFeedback() {
   // Automatic routing path: classify once → solve on the strong model at the
   // complexity-gated effort (low for simple, solveEffort for complex) → check every
   // later scan on the strong model at confirmEffort. All on the solve model; no
-  // cheap-verify tier and no separate confirm gate.
+  // cheap-verify tier and no separate confirm gate. Both Opus calls carry the skill
+  // tagger, so the assessment is zero-marginal here too.
   async function getFeedbackAuto(
     data: string,
     mediaType: ImageMediaType,
     mode: Mode,
   ): Promise<string> {
+    const wantSkills = settings.api.trackSkills;
     if (complexity === '') {
       const cls = await classify(data, mediaType, mode);
       if (cls !== 'simple' && cls !== 'complex') return 'OK'; // problem not complete yet
@@ -344,9 +480,13 @@ export function useFeedback() {
         mediaType,
         mode,
         buildCachedContext(false),
+        wantSkills,
       );
       if (r.solution) cachedSolution = r.solution;
       if (r.problem) cachedProblem = r.problem;
+      lastSteps = solutionSteps();
+      recordMembership(r);
+      if (isCorrect(r.verdict)) captureSkills(r); // first-try-correct
       return r.verdict;
     }
     const r = await callModel(
@@ -357,7 +497,9 @@ export function useFeedback() {
       mediaType,
       mode,
       buildCachedContext(true),
+      wantSkills,
     );
+    if (isCorrect(r.verdict)) captureSkills(r);
     return r.verdict;
   }
 
@@ -365,17 +507,22 @@ export function useFeedback() {
   // cached. Once solved it LATCHES: the problem is never solved again for the rest
   // of the session (Clear moves to a new problem). The verify step runs every later
   // scan, where a cheap model checks progress against the cache. The confirm step
-  // runs when the cheap model says CORRECT: the confirm model re-checks the final
-  // answer before it chimes. If it disagrees, the cheap model is marked unreliable
-  // and the rest of THIS problem verifies on the confirm model.
+  // runs ONLY when the cheap model says CORRECT: the confirm (strong) model re-checks
+  // the final answer before it chimes. While the work is still unresolved the cheap
+  // model carries every scan — the strong model is never spent on an unfinished page.
   async function getFeedbackCached(
     data: string,
     mediaType: ImageMediaType,
     mode: Mode,
   ): Promise<string> {
     if (settings.api.routing === 'auto') return getFeedbackAuto(data, mediaType, mode);
+    const wantSkills = settings.api.trackSkills;
 
-    // SOLVE, only while there is no cached solution. Latches once solved.
+    // SOLVE, only while there is no cached solution. Latches once solved. One call:
+    // it solves, caches the key, AND grades the current page (buildCachedContext(false)
+    // tells it to chime CORRECT / name the first error when a finished answer is already
+    // present), so a page that was complete before the first scan is graded right here.
+    // It also tags the skill membership (and the signal, if the page is already done).
     if (cachedSolution === '') {
       const r = await callModel(
         settings.api.solveModel,
@@ -385,28 +532,19 @@ export function useFeedback() {
         mediaType,
         mode,
         buildCachedContext(false),
+        wantSkills,
       );
       if (r.solution) cachedSolution = r.solution;
       if (r.problem) cachedProblem = r.problem;
-      return r.verdict;
-    }
-
-    // DEMOTED, the cheap verifier was caught wrong on this problem → use confirm model.
-    if (haikuUnreliable) {
-      const r = await callModel(
-        settings.api.confirmModel,
-        settings.api.confirmEffort,
-        'confirm',
-        data,
-        mediaType,
-        mode,
-        buildCachedContext(true),
-      );
+      lastSteps = solutionSteps();
+      recordMembership(r);
+      if (isCorrect(r.verdict)) captureSkills(r); // first-try-correct
       return r.verdict;
     }
 
     // VERIFY, cheap model checks progress against the cached solution. The effort
-    // is applied only if the verify model supports it (ignored for e.g. Haiku).
+    // is applied only if the verify model supports it (ignored for cheap models). No
+    // skill tagging here, so the repetitive middle scans stay lean.
     const r = await callModel(
       settings.api.verifyModel,
       settings.api.verifyEffort,
@@ -419,7 +557,7 @@ export function useFeedback() {
     if (!isCorrect(r.verdict)) return r.verdict;
 
     // The cheap model thinks it's done, re-check the final answer on the confirm
-    // model before chiming CORRECT.
+    // model before chiming CORRECT. This Opus pass also carries the skill tagger.
     const c = await callModel(
       settings.api.confirmModel,
       settings.api.confirmEffort,
@@ -428,11 +566,16 @@ export function useFeedback() {
       mediaType,
       mode,
       buildCachedContext(true),
+      wantSkills,
     );
-    if (isCorrect(c.verdict)) return c.verdict; // confirmed
-    // The confirm model disagrees, the cheap one was wrong. Stop trusting it on
-    // this problem and deliver the confirm model's hint instead.
-    haikuUnreliable = true;
+    if (isCorrect(c.verdict)) {
+      captureSkills(c);
+      return c.verdict; // confirmed
+    }
+    // The confirm model disagrees: the cheap model's CORRECT was wrong this time, so
+    // deliver the confirm model's hint. Later scans keep verifying cheaply — the confirm
+    // gate above re-checks any future CORRECT — so the strong model is never spent
+    // scan-after-scan on an unresolved page.
     return c.verdict;
   }
 
@@ -533,12 +676,31 @@ export function useFeedback() {
 
   /** Start a fresh page: forget prior verdicts and stop any in-flight speech. */
   function resetSession(): void {
+    // Abandon hook (runs before state is cleared): if a page never resolved CORRECT but
+    // kept showing an error, deposit a 'wrong' on the solve-time membership's core skills
+    // so the estimator sees losses, not only wins. Reuses the solve-time membership, so
+    // there is no extra Opus call. A hedged-but-correct page deposits a clean instead.
+    if (settings.api.trackSkills && !skillApplied && skillMembership) {
+      const errors = history.filter((h) => h && !isQuiet(h) && !isCorrect(h));
+      const hadError = errors.length >= 1 && history.length >= 2;
+      const sig: 'clean' | 'wrong' | null = pageReachedCorrect ? 'clean' : hadError ? 'wrong' : null;
+      if (sig) {
+        const all = skillMembership.skills ?? [];
+        const core = all.filter((o) => o.role === 'core');
+        const tagged = (core.length ? core : all).map((o) => ({ ...o, signal: sig }));
+        applySkillPacket({ difficulty: skillMembership.difficulty, skills: tagged }, lastSteps, Date.now());
+      }
+    }
     history.length = 0;
     lastDelivered = '';
     cachedSolution = '';
     cachedProblem = '';
-    haikuUnreliable = false;
     lessonCaptured = false;
+    lastCorrection = null;
+    skillMembership = null;
+    skillApplied = false;
+    pageReachedCorrect = false;
+    lastSteps = 0;
     complexity = '';
     newPage();
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {

@@ -9,6 +9,7 @@ import {
   clearLessons,
   type Lesson,
 } from '@/stores/lessons';
+import MathText from '@/components/MathText.vue';
 
 const stats = computed(() => lessonStats());
 const all = computed(() => [...lessonStore.lessons].sort((a, b) => b.ts - a.ts));
@@ -91,7 +92,7 @@ function statusLabel(l: Lesson): string {
         </div>
 
         <div class="cue">
-          <div v-if="current.problem" class="problem mono">{{ current.problem }}</div>
+          <div v-if="current.problem" class="problem mono"><MathText :text="current.problem" /></div>
           <div class="ask">Recall the mistake you fixed here.</div>
           <div class="hint muted">Bring the mistake and the fix to mind before you reveal it.</div>
         </div>
@@ -100,11 +101,21 @@ function statusLabel(l: Lesson): string {
 
         <template v-else>
           <div class="answer">
-            <div class="answer-k mono">the mistake</div>
-            <div class="mistake">{{ current.mistake }}</div>
+            <template v-if="current.wrong || current.right">
+              <div class="answer-k mono">what went wrong</div>
+              <div class="mistake"><MathText :text="current.wrong || current.mistake" /></div>
+              <template v-if="current.right">
+                <div class="answer-k mono fix-k">the correction</div>
+                <div class="fix"><MathText :text="current.right" /></div>
+              </template>
+            </template>
+            <template v-else>
+              <div class="answer-k mono">the mistake</div>
+              <div class="mistake">{{ current.mistake }}</div>
+            </template>
             <details v-if="current.solution" class="sol">
               <summary>worked solution</summary>
-              <pre class="mono">{{ current.solution }}</pre>
+              <div class="sol-body mono"><MathText :text="current.solution" /></div>
             </details>
           </div>
           <div class="grade">
@@ -155,7 +166,7 @@ function statusLabel(l: Lesson): string {
       <div class="list">
         <div v-for="l in all" :key="l.id" class="card lesson">
           <div class="lesson-main">
-            <div class="lesson-mistake">{{ l.mistake }}</div>
+            <div class="lesson-mistake"><MathText :text="l.wrong || l.mistake" /></div>
             <div class="lesson-meta muted mono">
               <span>{{ l.modeLabel }}</span>
               <template v-if="l.problem"><span class="dot">·</span><span>{{ l.problem }}</span></template>
@@ -258,6 +269,18 @@ function statusLabel(l: Lesson): string {
   margin-top: 0.3rem;
 }
 
+.fix-k {
+  margin-top: 0.9rem;
+}
+
+.fix {
+  font-size: 1.05rem;
+  color: var(--ink);
+  margin-top: 0.3rem;
+  border-left: 2px solid var(--good);
+  padding-left: 0.6rem;
+}
+
 .sol {
   margin-top: 0.9rem;
 }
@@ -268,9 +291,8 @@ function statusLabel(l: Lesson): string {
   color: var(--muted);
 }
 
-.sol pre {
-  white-space: pre-wrap;
-  font-size: 0.74rem;
+.sol-body {
+  font-size: 0.78rem;
   color: var(--ink);
   background: var(--panel-2);
   border-radius: var(--radius);

@@ -22,7 +22,9 @@
     "confirmEffort": "low",
     "routing": "manual",
     "classifyModel": "claude-haiku-4-5",
-    "feedbackLang": "English"
+    "feedbackLang": "English",
+    "trackSkills": true,
+    "masteryTarget": 0
   },
   "export": {
     "maxEdgePx": 896,

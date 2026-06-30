@@ -129,6 +129,17 @@ const STYLES = ['spoken', 'chime', 'both'];
             </div>
           </div>
 
+          <div class="row" style="margin-top: 0.8rem; flex-wrap: wrap; gap: 0.6rem 1rem">
+            <label class="toggle">
+              <input v-model="settings.api.trackSkills" type="checkbox" />
+              Track skill mastery (Progress tab)
+            </label>
+            <span class="muted" style="font-size: 0.7rem; flex: 1; min-width: 14rem">
+              Tags each solved math problem against a fixed skill map on the Opus call that already
+              runs, so it adds no request. Off stops the Progress tab from updating.
+            </span>
+          </div>
+
           <div class="row" style="margin-top: 0.8rem">
             <span class="muted" style="font-size: 0.72rem">
               Manual: solve &amp; confirm on the capable model, routine verify on the cheap one.

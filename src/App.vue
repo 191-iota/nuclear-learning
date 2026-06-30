@@ -2,16 +2,18 @@
 import { computed, ref } from 'vue';
 import MainView from '@/views/MainView.vue';
 import LessonsView from '@/views/LessonsView.vue';
+import ProgressView from '@/views/ProgressView.vue';
 import UsageView from '@/views/UsageView.vue';
 import PresetsView from '@/views/PresetsView.vue';
 import { theme, toggleTheme } from '@/stores/theme';
 import { lessonStats } from '@/stores/lessons';
 
-type View = 'pad' | 'lessons' | 'usage' | 'presets';
+type View = 'pad' | 'lessons' | 'progress' | 'usage' | 'presets';
 const view = ref<View>('pad');
 const tabs: { id: View; label: string }[] = [
   { id: 'pad', label: 'Pad' },
   { id: 'lessons', label: 'Lessons' },
+  { id: 'progress', label: 'Progress' },
   { id: 'usage', label: 'Usage' },
   { id: 'presets', label: 'Presets' },
 ];
@@ -57,6 +59,7 @@ const dueCount = computed(() => lessonStats().due);
       <!-- Kept mounted so the pen stays connected and the canvas persists. -->
       <MainView v-show="view === 'pad'" />
       <LessonsView v-if="view === 'lessons'" />
+      <ProgressView v-if="view === 'progress'" />
       <UsageView v-if="view === 'usage'" />
       <PresetsView v-if="view === 'presets'" />
     </main>

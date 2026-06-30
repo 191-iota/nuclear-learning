@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",
+    "@types/katex": "^0.16.8",
+    "katex": "^0.16.47",
     "vue": "^3.5.39",
     "web_pen_sdk": "^0.8.0"
   },

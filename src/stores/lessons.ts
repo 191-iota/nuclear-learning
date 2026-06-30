@@ -18,8 +18,14 @@ export interface Lesson {
   mode: string;
   modeLabel: string;
   problem: string; // short label of the problem (may be '')
-  mistake: string; // the corrected error hint, verbatim
+  mistake: string; // the corrected error hint, verbatim (the live nudge)
   solution: string; // worked solution, for the reveal (may be '')
+  // Learner-facing correction captured when the problem turned CORRECT: what was
+  // actually wrong and the right version, with math in LaTeX so the review card can
+  // render it. Optional, older persisted lessons (v1) predate these and fall back to
+  // `mistake`.
+  wrong?: string;
+  right?: string;
   // Spaced-repetition state (Leitner box system).
   box: number; // 0..MAX_BOX, higher = longer interval
   due: number; // next review time (ms epoch)
@@ -85,10 +91,14 @@ export function addLesson(input: {
   problem: string;
   mistake: string;
   solution: string;
+  wrong?: string;
+  right?: string;
 }): void {
   const mistake = input.mistake.trim();
   if (!mistake) return;
   const problem = input.problem.trim();
+  const wrong = (input.wrong ?? '').slice(0, MAX_SOLUTION);
+  const right = (input.right ?? '').slice(0, MAX_SOLUTION);
 
   const dup = lessonStore.lessons.find(
     (l) => l.mode === input.mode && norm(l.mistake) === norm(mistake) && norm(l.problem) === norm(problem),
@@ -98,6 +108,8 @@ export function addLesson(input: {
     dup.box = 0;
     dup.due = Date.now();
     if (input.solution) dup.solution = input.solution.slice(0, MAX_SOLUTION);
+    if (wrong) dup.wrong = wrong;
+    if (right) dup.right = right;
     persist();
     return;
   }
@@ -111,6 +123,8 @@ export function addLesson(input: {
     problem,
     mistake,
     solution: input.solution.slice(0, MAX_SOLUTION),
+    wrong,
+    right,
     box: 0,
     due: Date.now(), // due immediately for the first review
     reps: 0,
