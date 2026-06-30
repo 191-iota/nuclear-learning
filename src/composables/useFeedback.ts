@@ -487,11 +487,11 @@ export function useFeedback() {
     }
   }
 
-  // Automatic routing path: classify once → solve on the strong model at the
-  // complexity-gated effort (low for simple, solveEffort for complex) → check every
-  // later scan on the strong model at confirmEffort. All on the solve model; no
-  // cheap-verify tier and no separate confirm gate. Both Opus calls carry the skill
-  // tagger, so the assessment is zero-marginal here too.
+  // Automatic routing path: classify the problem once (cheap) only to gate the SOLVE
+  // effort (low for simple, solveEffort for complex), then run the same tiered flow as
+  // manual. The strong model is used ONLY to solve and to confirm; verification is
+  // always the cheap model. So auto differs from manual only in that the classifier
+  // picks the solve effort, which saves on simple problems.
   async function getFeedbackAuto(
     data: string,
     mediaType: ImageMediaType,
@@ -503,6 +503,8 @@ export function useFeedback() {
       if (cls !== 'simple' && cls !== 'complex') return 'OK'; // problem not complete yet
       complexity = cls;
     }
+
+    // SOLVE once on the strong model, at the classifier-gated effort.
     if (cachedSolution === '') {
       const effort = complexity === 'complex' ? settings.api.solveEffort : 'low';
       const r = await callModel(
@@ -522,18 +524,34 @@ export function useFeedback() {
       if (isCorrect(r.verdict)) captureSkills(r); // first-try-correct
       return r.verdict;
     }
+
+    // VERIFY every later scan on the cheap model. No skill tagging here, so the
+    // repetitive middle stays lean.
     const r = await callModel(
-      settings.api.solveModel,
-      settings.api.confirmEffort,
+      settings.api.verifyModel,
+      settings.api.verifyEffort,
       'verify',
+      data,
+      mediaType,
+      mode,
+      buildCachedContext(true),
+    );
+    if (!isCorrect(r.verdict)) return r.verdict;
+
+    // CONFIRM on the strong model before the chime; this Opus call carries the skill
+    // tagger. If it disagrees, deliver its hint and keep verifying cheaply.
+    const c = await callModel(
+      settings.api.confirmModel,
+      settings.api.confirmEffort,
+      'confirm',
       data,
       mediaType,
       mode,
       buildCachedContext(true),
       wantSkills,
     );
-    if (isCorrect(r.verdict)) captureSkills(r);
-    return r.verdict;
+    if (isCorrect(c.verdict)) captureSkills(c);
+    return c.verdict;
   }
 
   // Tiered solve-then-verify path. The solve step runs only until a solution is

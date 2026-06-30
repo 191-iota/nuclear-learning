@@ -119,7 +119,7 @@ This holds because the work is split across models by how hard each part is. The
 
 Two things keep the scan count down. A scan only fires once enough new ink has arrived, so pausing to think spends nothing, and once a problem is solved it is never solved again. Most of what is left is input, the cropped image and the prompt re-sent on each scan, so a smaller image or fewer scans move the number more than anything on the output side.
 
-A second routing mode is available, off by default. A quick classifier judges each problem as simple or multi-step the first time it can read it, then every scan runs on the strong model, at low effort for a simple problem and your solve effort for a multi-step one. Which mode comes out cheaper depends on the problems you give it. Both live in the Presets panel.
+A second routing mode is available, off by default. A quick classifier judges each problem as simple or multi-step the first time it can read it, and uses that only to pick the solve effort, low for a simple problem and your solve effort for a multi-step one. Everything else is the same tiered flow: the cheap model still carries the verify scans and the strong model still signs off. So it trades one small classifier call for a cheaper solve on the easy problems. Both modes live in the Presets panel.
 
 ## Staying coherent across a page
 
