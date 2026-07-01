@@ -70,6 +70,20 @@ const SKILL_SOLUTION_SCHEMA = {
   },
 };
 
+// The gatekeeper schema: the cheap corner-detector reports only these two booleans, never a grade.
+const GATE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['cornerMark', 'doubleUnderline'],
+  properties: {
+    cornerMark: { type: 'boolean' },
+    doubleUnderline: { type: 'boolean' },
+  },
+};
+
+const GATE_PROMPT =
+  'You look at a photo of handwritten work and report ONLY two things, without judging the mathematics at all: (1) cornerMark: whether the learner has drawn a CORNER MARK on the page, a small hand-drawn right-angle hook (an L, a corner bracket, two short strokes meeting at a right angle) placed beside or beneath a line as a deliberate annotation, separate from the mathematics, and NOT a right angle that belongs to the work (a geometry figure, the corner of a bracket or fraction bar, a capital-L variable) and NOT an arrow used to redo a line; (2) doubleUnderline: whether any result is underlined with a double line. If you are not sure you see a corner mark, report false. Reply with a JSON object {"cornerMark": boolean, "doubleUnderline": boolean} and nothing else.';
+
 let client: Anthropic | null = null;
 
 function getClient(): Anthropic {
@@ -142,14 +156,6 @@ export function useFeedback() {
   let lastSteps = 0;
   // Automatic-routing only: cached difficulty class for the current problem.
   let complexity = '';
-  // Escalation ladder for the verify scans. The base verifier is Haiku (cheapest) and it
-  // carries the repetitive middle; it upgrades to Sonnet for the rest of the session once
-  // Opus overturns a completion that Sonnet had agreed to, since the problem is then ambiguous
-  // enough that the cheap base can no longer be trusted. `escalationNote` records why a claimed
-  // completion was overturned, fed back to the base so it stops re-escalating the same false
-  // finish.
-  let verifyBaseTier: 'haiku' | 'sonnet' = 'haiku';
-  let escalationNote = '';
 
   function buildContext(mode: Mode): string {
     const lang = langLine(mode);
@@ -334,14 +340,6 @@ export function useFeedback() {
       lines.push(history.map((h, i) => `${i + 1}. ${h}`).join('\n'));
       lines.push('');
     }
-    if (escalationNote) {
-      lines.push(
-        'A stronger check looked at a moment that had seemed finished and found it was not done: ' +
-          escalationNote +
-          ' Keep that in mind and do not report the work as done until it is resolved.',
-        '',
-      );
-    }
     if (hasCache) {
       lines.push(
         'The correct solution to the current problem is:',
@@ -473,6 +471,44 @@ export function useFeedback() {
     return mode.cornerGated && reply.cornerMark !== true ? 'OK' : reply.verdict;
   }
 
+  // The gatekeeper. The cheapest model looks at the page and reports ONLY whether a corner mark is
+  // there (the learner's request for feedback); it never judges the mathematics, so it is a tiny,
+  // constant call. A missing or malformed reply is read as no mark, so the safe default is silence
+  // and no spend on the strong models.
+  async function sawCornerMark(data: string, mediaType: ImageMediaType, mode: Mode): Promise<boolean> {
+    const model = settings.api.gateModel;
+    try {
+      const resp = await getClient().messages.create(
+        {
+          model,
+          max_tokens: 80,
+          system: GATE_PROMPT,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
+                { type: 'text', text: 'Report cornerMark and doubleUnderline as JSON.' },
+              ],
+            },
+          ],
+          output_config: { format: { type: 'json_schema', schema: GATE_SCHEMA } },
+        } as any,
+        { timeout: 12000 },
+      );
+      logUsage(resp, mode, model, 'gate');
+      const out = (resp.content as any[])
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text as string)
+        .join('')
+        .trim();
+      return JSON.parse(out)?.cornerMark === true;
+    } catch (err) {
+      console.warn('[nuclear-learning] corner gate failed, staying silent:', err);
+      return false;
+    }
+  }
+
   // Automatic routing: a cheap model judges whether the posed problem is simple or
   // multi-step (once), which selects the solve effort. Biased toward "complex" when
   // unsure, since a complex problem solved at low effort poisons every later check.
@@ -602,6 +638,10 @@ export function useFeedback() {
     mediaType: ImageMediaType,
     mode: Mode,
   ): Promise<string> {
+    // Cheap gatekeeper: a Haiku pass whose ONLY job is to spot the corner mark. Until one is
+    // present, nothing expensive runs (no Opus solve, no Sonnet verify), so writing and pausing to
+    // think cost almost nothing. It never judges the mathematics.
+    if (mode.cornerGated && !(await sawCornerMark(data, mediaType, mode))) return 'OK';
     if (settings.api.routing === 'auto') return getFeedbackAuto(data, mediaType, mode);
     const wantSkills = settings.api.trackSkills;
 
@@ -630,13 +670,11 @@ export function useFeedback() {
       return v;
     }
 
-    // VERIFY ladder. The base verifier (Haiku until upgraded to Sonnet) carries the repetitive
-    // middle cheaply, comparing the work against the cached solution. It escalates only when it
-    // thinks the work is done: Sonnet gives a second opinion, and only if Sonnet agrees does Opus
-    // confirm. So the stronger models are spent on claimed completions, not on every scan.
-    const baseModel = verifyBaseTier === 'haiku' ? settings.api.verifyBaseModel : settings.api.verifyModel;
+    // VERIFY on Sonnet against the cached solution, escalating a claimed completion to Opus to
+    // confirm before we acknowledge. The Haiku gatekeeper above already ensured a corner mark is
+    // present, so these run only on scans the learner asked to have checked.
     const r = await callModel(
-      baseModel,
+      settings.api.verifyModel,
       settings.api.verifyEffort,
       'verify',
       data,
@@ -645,29 +683,8 @@ export function useFeedback() {
       buildCachedContext(true),
     );
     const rv = gateVerdict(r, mode);
-    if (!isCorrect(rv)) return rv; // OK or a correction from the base, delivered as-is
+    if (!isCorrect(rv)) return rv;
 
-    // The base thinks it is done. While it is still Haiku, take a Sonnet second opinion; a
-    // Sonnet that disagrees is stored so Haiku stops re-escalating the same false finish.
-    if (verifyBaseTier === 'haiku') {
-      const s = await callModel(
-        settings.api.verifyModel,
-        settings.api.verifyEffort,
-        'verify',
-        data,
-        mediaType,
-        mode,
-        buildCachedContext(true),
-      );
-      const sv = gateVerdict(s, mode);
-      if (!isCorrect(sv)) {
-        escalationNote = isQuiet(sv) ? 'it was not yet complete' : sv;
-        return sv;
-      }
-    }
-
-    // Sonnet agrees, or the base is already Sonnet. Opus confirms before we acknowledge. This
-    // pass also carries the skill tagger.
     const c = await callModel(
       settings.api.confirmModel,
       settings.api.confirmEffort,
@@ -679,15 +696,7 @@ export function useFeedback() {
       wantSkills,
     );
     const cv = gateVerdict(c, mode);
-    if (isCorrect(cv)) {
-      captureSkills(c);
-      escalationNote = '';
-      return cv; // confirmed
-    }
-    // Opus overturns a completion Sonnet had agreed to: the problem is ambiguous from here on,
-    // so promote the base verifier to Sonnet for the rest of the session and deliver Opus's hint.
-    verifyBaseTier = 'sonnet';
-    escalationNote = '';
+    if (isCorrect(cv)) captureSkills(c);
     return cv;
   }
 
@@ -832,8 +841,6 @@ export function useFeedback() {
     pageReachedCorrect = false;
     lastSteps = 0;
     complexity = '';
-    verifyBaseTier = 'haiku';
-    escalationNote = '';
     newPage();
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();

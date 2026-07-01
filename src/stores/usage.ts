@@ -11,10 +11,11 @@ import { modelInfo } from '@/models';
  *
  * Console access:  __nlUsage.summary() · __nlUsage.records() · __nlUsage.clear()
  */
-export type Role = 'solve' | 'verify' | 'confirm' | 'classify' | 'lesson';
+export type Role = 'gate' | 'solve' | 'verify' | 'confirm' | 'classify' | 'lesson';
 
 // Human labels for the per-purpose breakdown.
 export const ROLE_LABEL: Record<Role, string> = {
+  gate: 'Corner check',
   solve: 'Solve',
   verify: 'Verify',
   confirm: 'Confirm',
