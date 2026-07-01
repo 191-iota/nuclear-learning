@@ -394,7 +394,11 @@ export function useFeedback() {
     try {
       parsed = JSON.parse(out);
     } catch {
-      // A non-JSON or refused reply carries no verdict, so treat it as OK (stay silent).
+      // A non-JSON / refused / truncated reply carries no verdict, so treat it as OK (stay silent).
+      // finish_reason 'length' means max_completion_tokens was too small for the reasoning + output.
+      console.warn(
+        `[nuclear-learning] ${role} reply unusable (finish_reason=${resp.choices?.[0]?.finish_reason}, ${out.length} chars); staying silent. If 'length', raise Max tokens.`,
+      );
       return { problem: '', solution: '', verdict: 'OK', correction: { wrong: '', right: '' } };
     }
     const correction = {
