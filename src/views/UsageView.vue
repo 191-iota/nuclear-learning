@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { perDay, usageSummary, byRole, byModel, clearUsage } from '@/stores/usage';
+import { perProblemBars, usageSummary, byRole, byModel, clearUsage, type ProblemBar } from '@/stores/usage';
 
 type Metric = 'cost' | 'tokens';
 const metric = ref<Metric>('cost');
@@ -8,41 +8,33 @@ const metric = ref<Metric>('cost');
 // All reactive off the usage records + the model prices, so everything recomputes
 // live as scans land and as you change a model or its price in Presets.
 const summary = computed(() => usageSummary());
+// One column per problem while there are few; once there are more problems than the bar
+// budget, neighbouring problems fold into a column so the chart keeps its width and shape
+// however long you use it. The per-problem read (and the input/output split) survives.
+const bars = computed(() => perProblemBars(48));
+const grouped = computed(() => bars.value.some((b) => b.problems > 1));
 const roles = computed(() => byRole());
 const models = computed(() => byModel());
 
-// Cumulative spend over time. A running total fills the width smoothly at any number
-// of days and is never dominated by one big day, unlike per-day or per-problem bars.
-const VW = 1000;
-const VH = 240;
-const series = computed(() => {
-  const ds = perDay(100000); // effectively all days
-  let cum = 0;
-  return ds.map((d) => {
-    const add = metric.value === 'cost' ? d.costUSD : d.input + d.output;
-    cum += add;
-    return { day: d.day, cum, dayVal: add };
-  });
-});
-const maxCum = computed(() => Math.max(1e-9, ...series.value.map((p) => p.cum)));
-const pts = computed(() => {
-  const s = series.value;
-  const n = s.length;
-  return s.map((p, i) => ({
-    x: n <= 1 ? VW : (i / (n - 1)) * VW,
-    y: VH - (p.cum / maxCum.value) * VH,
-  }));
-});
-const linePath = computed(() =>
-  pts.value.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' '),
+const maxVal = computed(() =>
+  Math.max(
+    1e-9,
+    ...bars.value.map((s) => (metric.value === 'cost' ? s.costUSD : s.input + s.output)),
+  ),
 );
-const areaPath = computed(() => {
-  const ps = pts.value;
-  if (ps.length < 2) return '';
-  const first = ps[0].x.toFixed(1);
-  const last = ps[ps.length - 1].x.toFixed(1);
-  return `M${first},${VH} ${linePath.value.slice(1)} L${last},${VH} Z`;
-});
+
+function segOut(s: ProblemBar): number {
+  return metric.value === 'cost' ? s.outputCostUSD : s.output;
+}
+function segIn(s: ProblemBar): number {
+  return metric.value === 'cost' ? s.inputCostUSD : s.input;
+}
+function fill(s: ProblemBar): number {
+  return Math.max(0, maxVal.value - segOut(s) - segIn(s));
+}
+function grow(v: number): number {
+  return (v / maxVal.value) * 100;
+}
 
 function usd(n: number): string {
   return '$' + (n >= 1 ? n.toFixed(2) : n.toFixed(3));
@@ -53,14 +45,20 @@ function tok(n: number): string {
 function share(costUSD: number): number {
   return summary.value.estCostUSD > 0 ? (costUSD / summary.value.estCostUSD) * 100 : 0;
 }
-function dayLabel(dayNum: number): string {
-  const d = new Date(dayNum * 86_400_000);
-  return `${d.getMonth() + 1}/${d.getDate()}`;
+function barRange(s: ProblemBar): string {
+  return s.problems > 1 ? `Problems ${s.fromPage}-${s.toPage}` : `Problem ${s.fromPage}`;
 }
-const firstLabel = computed(() => (series.value.length ? dayLabel(series.value[0].day) : ''));
-const totalLabel = computed(() =>
-  metric.value === 'cost' ? usd(summary.value.estCostUSD) : tok(summary.value.tokensTotal),
-);
+function tip(s: ProblemBar): string {
+  return `${barRange(s)} · ${s.scans} scans\n${tok(s.input)} in · ${tok(s.output)} out · ${usd(s.costUSD)}`;
+}
+// Under-bar numbers: label every column when they are single problems and few enough to
+// read, otherwise anchor just the first and last so the axis stays clean.
+function barLabel(s: ProblemBar, i: number): string {
+  if (bars.value.length <= 20 && s.problems === 1) return String(s.fromPage);
+  if (i === 0) return `#${s.fromPage}`;
+  if (i === bars.value.length - 1) return 'latest';
+  return '';
+}
 </script>
 
 <template>
@@ -124,37 +122,42 @@ const totalLabel = computed(() =>
       </div>
 
       <div class="card">
-        <div class="row" style="margin-bottom: 0.5rem">
-          <strong style="font-size: 0.85rem">{{ metric === 'cost' ? 'Spend' : 'Tokens' }} over time</strong>
-          <span class="muted mono" style="font-size: 0.72rem; margin-left: 0.5rem">{{ totalLabel }} total</span>
+        <div class="row" style="margin-bottom: 0.2rem">
+          <strong style="font-size: 0.85rem">{{ metric === 'cost' ? 'Cost' : 'Tokens' }} per problem</strong>
+          <span v-if="grouped" class="muted mono" style="font-size: 0.68rem; margin-left: 0.5rem"
+            >grouped to fit</span
+          >
           <span class="spacer" />
           <div class="tabs">
             <button class="tab" :class="{ active: metric === 'cost' }" @click="metric = 'cost'">Cost</button>
             <button class="tab" :class="{ active: metric === 'tokens' }" @click="metric = 'tokens'">Tokens</button>
           </div>
         </div>
-        <template v-if="pts.length >= 2">
-          <svg class="trend" :viewBox="`0 0 ${VW} ${VH}`" preserveAspectRatio="none" aria-hidden="true">
-            <path :d="areaPath" class="t-area" />
-            <path :d="linePath" class="t-line" />
-          </svg>
-          <div class="t-axis mono">
-            <span>{{ firstLabel }}</span>
-            <span class="spacer" />
-            <span>today</span>
+        <div class="chart">
+          <div v-for="(s, i) in bars" :key="s.fromPage" class="bar-col" :title="tip(s)">
+            <div class="bar-track">
+              <div class="seg-fill" :style="{ flexGrow: grow(fill(s)) }" />
+              <div class="seg seg-out" :style="{ flexGrow: grow(segOut(s)) }" />
+              <div class="seg seg-in" :style="{ flexGrow: grow(segIn(s)) }" />
+            </div>
+            <div class="bar-label">{{ barLabel(s, i) }}</div>
           </div>
-        </template>
-        <p v-else class="muted" style="font-size: 0.72rem; margin-top: 0.4rem">
-          The trend appears after a second day of use. Today's total is in the cards above.
-        </p>
+        </div>
+        <div class="legend">
+          <span><span class="dot" style="background: var(--chart-in)" />Input (image + prompt)</span>
+          <span><span class="dot" style="background: var(--chart-out)" />Output (thinking + reply)</span>
+        </div>
       </div>
 
       <p class="muted" style="font-size: 0.72rem; margin-top: 0.8rem">
-        The line is your running total, so it only ever climbs and stays readable however long you use
-        it. Lifetime figures are in the cards above. Prices come from the model rates in Presets, so
-        changing a model re-prices history instantly. Solve and confirm also carry the skill tagging
-        that feeds Progress, so it rides those rows rather than adding its own; lesson cards are the one
-        separate call, on Sonnet, written once per mistake you fix.
+        Each bar is one Clear-to-Clear problem, split into the input it sent and the output it got
+        back, priced from the model rates in Presets so changing a model re-prices history instantly.
+        Once you have done more problems than fit across the chart, neighbouring problems are grouped
+        into one bar so it keeps its width and shape however long you use it, and the lifetime totals
+        stay in the cards above. A strong model solves and signs off while a cheaper one runs the
+        repetitive middle checks. Solve and confirm also carry the skill tagging that feeds Progress, so
+        it rides those rows rather than adding its own; lesson cards are the one separate call, on
+        Sonnet, written once per mistake you fix.
       </p>
     </template>
 
@@ -215,31 +218,5 @@ const totalLabel = computed(() =>
   text-align: right;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-}
-
-.trend {
-  width: 100%;
-  height: 150px;
-  display: block;
-}
-
-.t-area {
-  fill: var(--chart-out);
-  opacity: 0.14;
-}
-
-.t-line {
-  fill: none;
-  stroke: var(--chart-out);
-  stroke-width: 2;
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
-}
-
-.t-axis {
-  display: flex;
-  font-size: 0.66rem;
-  color: var(--muted);
-  margin-top: 0.35rem;
 }
 </style>

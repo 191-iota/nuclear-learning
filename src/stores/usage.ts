@@ -136,6 +136,56 @@ export function perPage(): PageStat[] {
   return stats;
 }
 
+// One column per problem, but bucketed into at most `maxBars` so the chart stays the
+// same width however many problems you do. While there are fewer problems than bars each
+// column is exactly one problem (fromPage === toPage); past that, consecutive problems
+// are folded into near-equal groups and their costs summed, so the per-problem shape (and
+// the input/output split) survives the grouping instead of growing one bar forever.
+export interface ProblemBar {
+  fromPage: number;
+  toPage: number;
+  problems: number; // problems folded into this column (1 when not grouped)
+  scans: number;
+  input: number;
+  output: number;
+  inputCostUSD: number;
+  outputCostUSD: number;
+  costUSD: number;
+}
+
+export function perProblemBars(maxBars = 48): ProblemBar[] {
+  const pages = perPage();
+  const n = pages.length;
+  if (n === 0) return [];
+  const bars = Math.min(maxBars, n);
+  const out: ProblemBar[] = [];
+  for (let b = 0; b < bars; b += 1) {
+    const slice = pages.slice(Math.floor((b * n) / bars), Math.floor(((b + 1) * n) / bars));
+    if (!slice.length) continue;
+    const col: ProblemBar = {
+      fromPage: slice[0].page,
+      toPage: slice[slice.length - 1].page,
+      problems: slice.length,
+      scans: 0,
+      input: 0,
+      output: 0,
+      inputCostUSD: 0,
+      outputCostUSD: 0,
+      costUSD: 0,
+    };
+    for (const s of slice) {
+      col.scans += s.scans;
+      col.input += s.input;
+      col.output += s.output;
+      col.inputCostUSD += s.inputCostUSD;
+      col.outputCostUSD += s.outputCostUSD;
+    }
+    col.costUSD = col.inputCostUSD + col.outputCostUSD;
+    out.push(col);
+  }
+  return out;
+}
+
 const DAY = 86_400_000;
 
 // Cost over time, one bucket per calendar day, capped to the most recent `maxDays`
@@ -264,6 +314,7 @@ if (typeof window !== 'undefined') {
     records: () => usage.records.slice(),
     summary: usageSummary,
     perPage,
+    perProblemBars,
     perDay,
     byRole,
     byModel,
