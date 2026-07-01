@@ -433,12 +433,12 @@ export function useFeedback() {
     };
   }
 
-  // The grading path, no corner mark, no readiness gate. While no solution is cached, o3 attempts the
+  // The grading path, no corner mark, no readiness gate. While no solution is cached, gpt-5.4 attempts the
   // solve each scan: if the question is fully written it solves it at MEDIUM effort and caches the
   // worked checklist; if the statement is not yet complete it returns an empty solution and we quietly
-  // retry next scan. So o3 itself is the gatekeeper, not a flaky cheap readiness check. From then on
+  // retry next scan. So gpt-5.4 itself is the gatekeeper, not a flaky cheap readiness check. From then on
   // gpt-5.4-mini verifies every scan against the cache and corrects continuously (staying OK while a
-  // line is mid-working and only flagging a settled result), and o3 confirms a finished answer at LOW
+  // line is mid-working and only flagging a settled result), and gpt-5.4 confirms a finished answer at LOW
   // effort before we acknowledge. Clear moves on to a new problem.
   async function getFeedbackCached(
     data: string,
@@ -447,12 +447,12 @@ export function useFeedback() {
   ): Promise<string> {
     const wantSkills = settings.api.trackSkills;
 
-    // No solution yet: o3 attempts the solve. It caches only a complete question and leaves the cache
+    // No solution yet: gpt-5.4 attempts the solve. It caches only a complete question and leaves the cache
     // empty (a silent OK) while the statement is still going in, so it self-gates.
     if (cachedSolution === '') {
       const r = await callModel(
         settings.api.solveModel,
-        'medium',
+        'high',
         'solve',
         data,
         mediaType,

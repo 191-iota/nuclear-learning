@@ -8,10 +8,10 @@ export interface ModelInfo {
   effort: boolean; // reasoning model: takes the reasoning_effort parameter
 }
 
-// OpenAI reasoning models (o3 + a GPT-5 mini). Prices in $/1M tokens (editable in Presets). All
-// take reasoning_effort, are vision-capable, and support strict json_schema structured output.
+// OpenAI GPT-5.4 reasoning models. Prices in $/1M tokens (editable in Presets). All take
+// reasoning_effort, are vision-capable, and support strict json_schema structured output.
 export const MODELS: ModelInfo[] = [
-  { id: 'o3', label: 'o3', in: 2, out: 8, effort: true },
+  { id: 'gpt-5.4', label: 'GPT-5.4', in: 1.25, out: 10, effort: true },
   { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini', in: 0.25, out: 2, effort: true },
   { id: 'gpt-5-nano', label: 'GPT-5 nano', in: 0.05, out: 0.4, effort: true },
 ];

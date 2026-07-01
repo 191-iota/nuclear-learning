@@ -4,7 +4,7 @@
 
 # nuclear-learning
 
-![Vue 3](https://img.shields.io/badge/Vue-3-1a1915?style=flat-square) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-1a1915?style=flat-square) ![o3 vision](https://img.shields.io/badge/o3-vision-c39a27?style=flat-square) ![Web Bluetooth](https://img.shields.io/badge/Web%20Bluetooth-Chrome%20%2F%20Edge-1a1915?style=flat-square)
+![Vue 3](https://img.shields.io/badge/Vue-3-1a1915?style=flat-square) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-1a1915?style=flat-square) ![GPT-5.4 vision](https://img.shields.io/badge/GPT--5.4-vision-c39a27?style=flat-square) ![Web Bluetooth](https://img.shields.io/badge/Web%20Bluetooth-Chrome%20%2F%20Edge-1a1915?style=flat-square)
 
 > You antisocial folks will particularly like this one
 
@@ -18,7 +18,7 @@ Real-time feedback on handwritten work. You write on paper with a Neo Smartpen, 
 
 The pen streams (x, y, pressure) points over Web Bluetooth onto a canvas. When you pause, the page is cropped to just the ink and sent to the OpenAI API as a vision message. There is no OCR step; the model reads the ink directly.
 
-The moment the whole question is written, o3 solves it once and keeps that answer as a checklist. From then on GPT-5.4 mini verifies every scan against the checklist, staying quiet while a line is mid-working and speaking the first wrong step once you settle on a result. o3 signs off a finished, correct answer before it says so. So the strong model runs twice per problem, once to solve and once to confirm, and the cheap one carries the repetitive middle. It reads the mathematics aloud as words rather than symbols, so a hint comes through as "x squared" or "the square root of two", in English or Swiss German.
+The moment the whole question is written, GPT-5.4 solves it once at high effort and keeps that answer as a checklist. From then on GPT-5.4 mini verifies every scan against the checklist, staying quiet while a line is mid-working and speaking the first wrong step once you settle on a result. GPT-5.4 signs off a finished, correct answer before it says so. So the strong model runs twice per problem, once to solve and once to confirm, and the cheap one carries the repetitive middle. It reads the mathematics aloud as words rather than symbols, so a hint comes through as "x squared" or "the square root of two", in English or Swiss German.
 
 ## What it remembers
 
