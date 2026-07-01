@@ -139,12 +139,15 @@ async function runFeedback() {
     }
     if (import.meta.env.DEV) console.debug('[nuclear-learning] verdict:', JSON.stringify(text));
     feedback.recordVerdict(text);
-    lastFeedback.value = feedback.isQuiet(text) ? 'Looks good so far…' : text;
+    lastFeedback.value = feedback.isQuiet(text)
+      ? 'Looks good so far…'
+      : feedback.describe(text, activeMode.value);
     feedback.deliver(text, activeMode.value);
     status.value = '';
     // Correct → offer to auto-advance to the next problem; any other verdict
-    // (a fresh error after a correct one) calls off a pending clear.
-    if (feedback.isCorrect(text)) startAutoClear();
+    // (a fresh error after a correct one) calls off a pending clear. A corner-gated
+    // mode never auto-advances: a corner-checked line being right is not "problem done".
+    if (feedback.isCorrect(text) && !activeMode.value.cornerGated) startAutoClear();
     else if (!feedback.isQuiet(text)) cancelAutoClear();
   } catch (err: any) {
     if (gen !== generation) {

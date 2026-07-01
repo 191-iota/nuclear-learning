@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { settings } from '@/stores/settings';
+import { mathToSpeech } from '@/mathSpeech';
 import type { Mode } from '@/types';
 import { recordUsage, newPage, type Role } from '@/stores/usage';
 import { addLesson } from '@/stores/lessons';
@@ -327,14 +328,13 @@ export function useFeedback() {
         'The correct solution to the current problem is:',
         cachedSolution,
         '',
-        'The image shows the learner\'s current work. Verify RESULT-FIRST: if their final answer matches the known solution, respond CORRECT even if an earlier line looks off; only flag a step when one of their results actually disagrees with the known solution, and read what they actually wrote rather than guessing a formula. Do not re-derive; leave "solution" empty.',
-        'Once a finished answer is on the page — a double underline, a box, the word done/fertig/Antwort, or a direct answer covering every part of what was asked — you MUST grade it on THIS scan: CORRECT when it matches the known solution, otherwise the first diverging step. Do not answer OK once a finished answer is present; OK is only for work still visibly in progress or genuinely unreadable.',
+        'The image shows the learner\'s current work. Only comment when a CORNER MARK is present: a small right-angle corner the learner has drawn by hand beside or beneath a line (an L, a hook, a corner bracket), a deliberate annotation separate from the mathematics, not a right angle that belongs to the work itself. With no corner mark anywhere, respond OK and do nothing else, however complete the work looks. When a corner mark is present, judge the work it flags RESULT-FIRST against the known solution: if that result matches, respond CORRECT even if an earlier line looks off; otherwise name the first step whose value actually disagrees, reading what the learner wrote rather than guessing a formula. A double underline marks a submitted final answer, so a corner mark on one asks you to verify that answer. Do not re-derive; leave "solution" empty.',
         'CORRECTION (stored for the learner\'s later review, never spoken): if your verdict is CORRECT and the earlier feedback above had flagged a mistake the learner has since fixed, fill `correction.wrong` with the specific error they made and `correction.right` with the corrected version, each ONE short line, writing every mathematical expression in LaTeX between single $ delimiters (for example $\\overline{a\\cdot b}=\\bar a+\\bar b$). This field is for review only, so naming the right answer here is fine and does not change your verdict. If there was no earlier mistake, leave both empty.',
       );
     } else {
       lines.push(
         'No solution has been worked out for the current problem yet. Identify the problem the learner is working on, solve it completely yourself, and return the full worked solution in "solution" with a short label in "problem". If the problem statement is still incomplete or you cannot determine it, leave "solution" empty and answer OK in "verdict".',
-        'If a finished answer is ALREADY on the page (double underline, box, done/fertig/Antwort, or a direct answer covering every part asked), grade it on THIS scan against the solution you just derived: CORRECT when it matches, otherwise the first diverging step. Answer OK only while the work is still visibly unfinished.',
+        'Only comment when a CORNER MARK is present: a small hand-drawn right-angle corner beside or beneath a line, separate from the mathematics. With no corner mark, answer OK. When one is present, grade the work it flags against the solution you just derived: CORRECT when it matches, otherwise the first diverging step.',
       );
     }
     if (settings.api.feedbackLang === 'German') lines.push('', GERMAN_GRADING);
@@ -661,8 +661,14 @@ export function useFeedback() {
 
   function speak(text: string): void {
     if (typeof window === 'undefined' || !('speechSynthesis' in window) || !text) return;
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = settings.api.feedbackLang === 'German' ? 'de-DE' : settings.audio.voiceLang;
+    // Speak the math as words, not the raw notation. Without this the engine reads "$x^2$"
+    // as "dollar x caret two dollar" and drops symbols like √ ≤ ∫; mathToSpeech turns them
+    // into spoken maths in the feedback language, leaving the surrounding prose untouched.
+    const lang = settings.api.feedbackLang === 'German' ? 'de' : 'en';
+    const spoken = mathToSpeech(text, lang);
+    if (!spoken) return;
+    const utterance = new SpeechSynthesisUtterance(spoken);
+    utterance.lang = lang === 'de' ? 'de-DE' : settings.audio.voiceLang;
     utterance.rate = settings.audio.rate;
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
@@ -712,15 +718,27 @@ export function useFeedback() {
    * (prevents the same correction being replayed while you keep writing).
    * Returns true if it actually played.
    */
+  // What a verdict says out loud / on screen. A corner-gated mode "says it is correct"
+  // without marking it: a CORRECT verdict becomes a plain spoken confirmation, never the
+  // literal token. Every other verdict (errors, other modes) is delivered as written.
+  function describe(text: string, mode: Mode): string {
+    if (mode.cornerGated && isCorrect(text)) {
+      return settings.api.feedbackLang === 'German' ? 'Das stimmt.' : 'Correct.';
+    }
+    return text;
+  }
+
   function deliver(text: string, mode: Mode): boolean {
     if (!text || isQuiet(text)) return false;
     if (lastDelivered && deliveryKey(text) === deliveryKey(lastDelivered)) return false;
     lastDelivered = text;
-    if (mode.feedbackStyle === 'chime' || mode.feedbackStyle === 'both') {
+    // Corner-gated correct answers are spoken, not chimed ("say it is correct, don't mark it").
+    const markSilently = mode.cornerGated === true && isCorrect(text);
+    if ((mode.feedbackStyle === 'chime' || mode.feedbackStyle === 'both') && !markSilently) {
       playChime(isCorrect(text));
     }
     if (mode.feedbackStyle === 'spoken' || mode.feedbackStyle === 'both') {
-      speak(text);
+      speak(describe(text, mode));
     }
     return true;
   }
@@ -759,5 +777,5 @@ export function useFeedback() {
     }
   }
 
-  return { getFeedback, recordVerdict, deliver, resetSession, speak, playChime, isCorrect, isQuiet };
+  return { getFeedback, recordVerdict, deliver, describe, resetSession, speak, playChime, isCorrect, isQuiet };
 }
