@@ -16,7 +16,7 @@ export const MODELS: ModelInfo[] = [
   { id: 'gpt-5-nano', label: 'GPT-5 nano', in: 0.05, out: 0.4, effort: true },
 ];
 
-export const EFFORTS = ['minimal', 'low', 'medium', 'high'];
+export const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh'];
 
 export function modelInfo(id: string): ModelInfo {
   return MODELS.find((m) => m.id === id) ?? MODELS[0];

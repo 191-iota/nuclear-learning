@@ -438,7 +438,7 @@ export function useFeedback() {
         {
           model,
           max_completion_tokens: 600,
-          reasoning_effort: 'minimal',
+          reasoning_effort: 'low',
           messages: [
             {
               role: 'system',
