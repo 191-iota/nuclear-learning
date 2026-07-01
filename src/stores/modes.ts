@@ -7,7 +7,10 @@ import defaultModes from '@config/modes.json';
  * presets are persisted to localStorage. The Presets view mutates this directly;
  * MainView reads it reactively so prompt / debounce / effort changes apply live.
  */
-const KEY = 'nl.modes.v1';
+// Bumped when the shipped modes change in a way a stale saved copy must not shadow (the
+// corner-gate flag and prompt). A bump drops the old localStorage and re-seeds from
+// config/modes.json on next load, so new behaviour actually reaches an existing browser.
+const KEY = 'nl.modes.v2';
 
 function seed(): Mode[] {
   return structuredClone(defaultModes) as unknown as Mode[];

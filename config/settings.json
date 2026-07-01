@@ -12,14 +12,14 @@
     "chimeError": "error.mp3"
   },
   "api": {
-    "model": "claude-opus-4-6",
+    "model": "claude-opus-4-8",
     "maxTokens": 4096,
-    "solveModel": "claude-opus-4-6",
+    "solveModel": "claude-opus-4-8",
     "solveEffort": "medium",
     "verifyModel": "claude-sonnet-4-6",
     "verifyEffort": "low",
     "gateModel": "claude-haiku-4-5",
-    "confirmModel": "claude-opus-4-6",
+    "confirmModel": "claude-opus-4-8",
     "confirmEffort": "low",
     "routing": "manual",
     "classifyModel": "claude-haiku-4-5",
