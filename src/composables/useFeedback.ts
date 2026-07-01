@@ -452,7 +452,7 @@ export function useFeedback() {
     if (cachedSolution === '') {
       const r = await callModel(
         settings.api.solveModel,
-        'high',
+        'medium',
         'solve',
         data,
         mediaType,
