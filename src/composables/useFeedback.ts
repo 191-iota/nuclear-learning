@@ -21,10 +21,13 @@ type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 const SOLUTION_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['problem', 'solution', 'verdict', 'correction'],
+  required: ['problem', 'solution', 'cornerMark', 'verdict', 'correction'],
   properties: {
     problem: { type: 'string' },
     solution: { type: 'string' },
+    // Whether the learner has drawn a corner mark on the page. The app forces the verdict
+    // to OK whenever this is false in a corner-gated mode, so nothing is surfaced unasked.
+    cornerMark: { type: 'boolean' },
     verdict: { type: 'string' },
     correction: {
       type: 'object',
@@ -47,7 +50,7 @@ const SOLUTION_SCHEMA = {
 const SKILL_SOLUTION_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['problem', 'solution', 'verdict', 'correction', 'difficulty', 'skills'],
+  required: ['problem', 'solution', 'cornerMark', 'verdict', 'correction', 'difficulty', 'skills'],
   properties: {
     ...SOLUTION_SCHEMA.properties,
     difficulty: { enum: [1, 2, 3, 4, 5] },
@@ -328,13 +331,14 @@ export function useFeedback() {
         'The correct solution to the current problem is:',
         cachedSolution,
         '',
-        'The image shows the learner\'s current work. Only comment when a CORNER MARK is present: a small right-angle corner the learner has drawn by hand beside or beneath a line (an L, a hook, a corner bracket), a deliberate annotation separate from the mathematics, not a right angle that belongs to the work itself. With no corner mark anywhere, respond OK and do nothing else, however complete the work looks. When a corner mark is present, judge the work it flags RESULT-FIRST against the known solution: if that result matches, respond CORRECT even if an earlier line looks off; otherwise name the first step whose value actually disagrees, reading what the learner wrote rather than guessing a formula. A double underline marks a submitted final answer, so a corner mark on one asks you to verify that answer. Do not re-derive; leave "solution" empty.',
+        'Set `cornerMark` true ONLY if the learner has clearly drawn a corner mark on this page: a small hand-drawn right-angle hook (an L, a corner bracket, two short strokes at a right angle) placed beside or beneath a line as a deliberate annotation, separate from the mathematics, not a right angle that belongs to the work (a geometry figure, a bracket or fraction-bar corner, an L variable). If you are unsure, set it false.',
+        'If `cornerMark` is false, your verdict is OK and nothing else, whatever the work shows. Never correct, acknowledge, or comment without a corner mark. When `cornerMark` is true, judge RESULT-FIRST against the known solution: if a result diverges, name the first diverging step, reading what the learner wrote rather than guessing a formula. Respond CORRECT ONLY when every sub-part label on the page (a, b, c, ...) has an answer, each answered sub-part carries its OWN double-underlined result tied to it, and every error flagged earlier has been fixed; otherwise, with no diverging result, respond OK. Give no advice or encouragement of any kind. Do not re-derive; leave "solution" empty.',
         'CORRECTION (stored for the learner\'s later review, never spoken): if your verdict is CORRECT and the earlier feedback above had flagged a mistake the learner has since fixed, fill `correction.wrong` with the specific error they made and `correction.right` with the corrected version, each ONE short line, writing every mathematical expression in LaTeX between single $ delimiters (for example $\\overline{a\\cdot b}=\\bar a+\\bar b$). This field is for review only, so naming the right answer here is fine and does not change your verdict. If there was no earlier mistake, leave both empty.',
       );
     } else {
       lines.push(
-        'No solution has been worked out for the current problem yet. Identify the problem the learner is working on, solve it completely yourself, and return the full worked solution in "solution" with a short label in "problem". If the problem statement is still incomplete or you cannot determine it, leave "solution" empty and answer OK in "verdict".',
-        'Only comment when a CORNER MARK is present: a small hand-drawn right-angle corner beside or beneath a line, separate from the mathematics. With no corner mark, answer OK. When one is present, grade the work it flags against the solution you just derived: CORRECT when it matches, otherwise the first diverging step.',
+        'No solution has been worked out for the current problem yet. Identify the problem the learner is working on, solve it completely yourself, and return the full worked solution in "solution" with a short label in "problem" (work it out and keep it ready even on a scan where you stay silent). If the problem statement is still incomplete or you cannot determine it, leave "solution" empty.',
+        'Set `cornerMark` true only if a corner mark is clearly present (a hand-drawn right-angle hook beside a line, separate from the mathematics; if unsure, false). If `cornerMark` is false, your verdict is OK. When it is true, grade against the solution you just derived: name the first diverging step if a result is wrong; respond CORRECT ONLY when every sub-part is answered with its own double-underlined result and every earlier error is fixed; otherwise OK. Give no advice.',
       );
     }
     if (settings.api.feedbackLang === 'German') lines.push('', GERMAN_GRADING);
@@ -358,6 +362,7 @@ export function useFeedback() {
   ): Promise<{
     problem: string;
     solution: string;
+    cornerMark: boolean;
     verdict: string;
     correction: { wrong: string; right: string };
     difficulty?: number;
@@ -406,7 +411,8 @@ export function useFeedback() {
     try {
       parsed = JSON.parse(out);
     } catch {
-      return { problem: '', solution: '', verdict: out, correction: { wrong: '', right: '' } };
+      // A non-JSON reply carries no corner-mark signal, so a gated mode treats it as OK.
+      return { problem: '', solution: '', cornerMark: false, verdict: out, correction: { wrong: '', right: '' } };
     }
     const correction = {
       wrong: (parsed?.correction?.wrong ?? '').trim(),
@@ -433,11 +439,20 @@ export function useFeedback() {
     return {
       problem: (parsed.problem ?? '').trim(),
       solution: (parsed.solution ?? '').trim(),
+      cornerMark: parsed.cornerMark === true,
       verdict: (parsed.verdict ?? '').trim(),
       correction,
       difficulty,
       skills,
     };
+  }
+
+  // Corner-gated modes only surface a verdict when the model reports a corner mark on the
+  // page; otherwise the app forces OK, so nothing interrupts work you did not flag. This
+  // enforces the gate in code, so a stray correction or a premature CORRECT can never leak
+  // through when there is no mark, even if the model tries to comment anyway.
+  function gateVerdict(reply: { verdict: string; cornerMark?: boolean }, mode: Mode): string {
+    return mode.cornerGated && reply.cornerMark !== true ? 'OK' : reply.verdict;
   }
 
   // Automatic routing: a cheap model judges whether the posed problem is simple or
@@ -521,8 +536,9 @@ export function useFeedback() {
       if (r.problem) cachedProblem = r.problem;
       lastSteps = solutionSteps();
       recordMembership(r);
-      if (isCorrect(r.verdict)) captureSkills(r); // first-try-correct
-      return r.verdict;
+      const v = gateVerdict(r, mode);
+      if (isCorrect(v)) captureSkills(r); // first-try-correct, only with a corner mark
+      return v;
     }
 
     // VERIFY every later scan on the cheap model. No skill tagging here, so the
@@ -536,7 +552,8 @@ export function useFeedback() {
       mode,
       buildCachedContext(true),
     );
-    if (!isCorrect(r.verdict)) return r.verdict;
+    const rv = gateVerdict(r, mode);
+    if (!isCorrect(rv)) return rv;
 
     // CONFIRM on the strong model before the chime; this Opus call carries the skill
     // tagger. If it disagrees, deliver its hint and keep verifying cheaply.
@@ -550,8 +567,9 @@ export function useFeedback() {
       buildCachedContext(true),
       wantSkills,
     );
-    if (isCorrect(c.verdict)) captureSkills(c);
-    return c.verdict;
+    const cv = gateVerdict(c, mode);
+    if (isCorrect(cv)) captureSkills(c);
+    return cv;
   }
 
   // Tiered solve-then-verify path. The solve step runs only until a solution is
@@ -589,8 +607,9 @@ export function useFeedback() {
       if (r.problem) cachedProblem = r.problem;
       lastSteps = solutionSteps();
       recordMembership(r);
-      if (isCorrect(r.verdict)) captureSkills(r); // first-try-correct
-      return r.verdict;
+      const v = gateVerdict(r, mode);
+      if (isCorrect(v)) captureSkills(r); // first-try-correct, only with a corner mark
+      return v;
     }
 
     // VERIFY, cheap model checks progress against the cached solution. The effort
@@ -605,7 +624,8 @@ export function useFeedback() {
       mode,
       buildCachedContext(true),
     );
-    if (!isCorrect(r.verdict)) return r.verdict;
+    const rv = gateVerdict(r, mode);
+    if (!isCorrect(rv)) return rv;
 
     // The cheap model thinks it's done, re-check the final answer on the confirm
     // model before chiming CORRECT. This Opus pass also carries the skill tagger.
@@ -619,15 +639,11 @@ export function useFeedback() {
       buildCachedContext(true),
       wantSkills,
     );
-    if (isCorrect(c.verdict)) {
-      captureSkills(c);
-      return c.verdict; // confirmed
-    }
-    // The confirm model disagrees: the cheap model's CORRECT was wrong this time, so
-    // deliver the confirm model's hint. Later scans keep verifying cheaply — the confirm
-    // gate above re-checks any future CORRECT — so the strong model is never spent
-    // scan-after-scan on an unresolved page.
-    return c.verdict;
+    const cv = gateVerdict(c, mode);
+    if (isCorrect(cv)) captureSkills(c);
+    // If the confirm model disagrees (or there is no corner mark) this is OK or its hint;
+    // later scans keep verifying cheaply, and the gate above re-checks any future CORRECT.
+    return cv;
   }
 
   /** Commit a verdict to the page's session memory (kept distinct). */
