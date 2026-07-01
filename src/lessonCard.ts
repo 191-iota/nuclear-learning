@@ -35,7 +35,7 @@ function getClient(): OpenAI {
   if (!client) {
     const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
     if (!apiKey) throw new Error('Missing VITE_OPENAI_API_KEY.');
-    client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true, timeout: 30000, maxRetries: 1 });
+    client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true, timeout: 90000, maxRetries: 1 });
   }
   return client;
 }

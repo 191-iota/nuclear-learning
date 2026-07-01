@@ -76,7 +76,8 @@ function getClient(): OpenAI {
       throw new Error('Missing VITE_OPENAI_API_KEY. Copy .env.example to .env and add your key.');
     }
     // Bound each request so a stalled call can't freeze the feedback loop.
-    client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true, timeout: 30000, maxRetries: 1 });
+    // Reasoning models legitimately take 30-90s at medium/high effort, so the timeout is generous.
+    client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true, timeout: 90000, maxRetries: 1 });
   }
   return client;
 }

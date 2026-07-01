@@ -16,7 +16,7 @@
     "maxTokens": 32000,
     "solveModel": "gpt-5.4",
     "verifyModel": "gpt-5.4-mini",
-    "verifyEffort": "xhigh",
+    "verifyEffort": "high",
     "confirmModel": "gpt-5.4",
     "feedbackLang": "English",
     "trackSkills": true,

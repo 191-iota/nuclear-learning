@@ -12,7 +12,7 @@ export type Settings = typeof defaults;
 // Bumped when the shipped defaults change in a way that must override a stale saved copy
 // (new fields, the corner-gate flow, model swaps). A bump drops the old localStorage and
 // re-seeds from config/settings.json on next load.
-const KEY = 'nl.settings.v10';
+const KEY = 'nl.settings.v11';
 
 function load(): Settings {
   const base = structuredClone(defaults) as Settings;
