@@ -128,10 +128,7 @@ export function useFeedback() {
   // and it is never re-solved until resetSession (Clear).
   let cachedSolution = '';
   let cachedProblem = '';
-  // Difficulty class for the current problem (easy | medium | high) from the Haiku classifier;
-  // '' until classified. Picks which model the solve and confirm run on. Cleared on Clear.
-  let cachedDifficulty = '';
-  // Whether the last scan's gate saw a corner mark, so the UI can tell "no corner yet" (nothing
+  // Whether the last scan's verifier saw a corner mark, so the UI can tell "no corner yet" (nothing
   // asked) apart from "corner seen, still not done" instead of one vague message for both.
   let sawCornerLast = false;
   // One lesson per problem: set once a corrected mistake is logged this session.
@@ -468,68 +465,11 @@ export function useFeedback() {
     return mode.cornerGated && reply.cornerMark !== true ? 'OK' : reply.verdict;
   }
 
-  // The strong-model tier for a problem's difficulty, shared by the solve and the confirm: an easy
-  // problem stays on the cheaper model, a hard one gets Opus with more thinking.
-  function tierFor(difficulty: string): { model: string; effort: string } {
-    if (difficulty === 'easy') return { model: settings.api.verifyModel, effort: 'low' };
-    if (difficulty === 'high') return { model: settings.api.solveModel, effort: 'medium' };
-    return { model: settings.api.solveModel, effort: 'low' };
-  }
-
-  // The classifier: the cheapest model rates the POSED problem's difficulty (not the learner's
-  // working) in one word, and says "none" while the question is not yet fully written. That word
-  // picks the tier the solve and confirm run on. Corner detection is NOT its job; the verifier does
-  // that on every scan.
-  async function classifyDifficulty(
-    data: string,
-    mediaType: ImageMediaType,
-    mode: Mode,
-  ): Promise<string> {
-    const model = settings.api.classifyModel;
-    const info = modelInfo(model);
-    // Plain one-word reply (no structured output, keeps it robust on cheap models).
-    const params: any = {
-      model,
-      max_tokens: 16,
-      system:
-        'You classify a handwritten math problem by difficulty. Judge the PROBLEM being posed, not the learner\'s working. Reply with EXACTLY ONE word and nothing else: "easy" for a one- or two-step problem, "medium" for a multi-step problem, "hard" for a long or conceptually demanding problem, or "none" if the problem statement is not yet fully written or you cannot tell. If unsure between easy and medium, reply medium.',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
-            { type: 'text', text: 'One word: easy, medium, hard, or none.' },
-          ],
-        },
-      ],
-    };
-    if (info.effort) params.thinking = { type: 'adaptive' };
-    try {
-      const resp = await getClient().messages.create(params, { timeout: 12000 });
-      logUsage(resp, mode, model, 'classify');
-      const out = (resp.content as any[])
-        .filter((b) => b.type === 'text')
-        .map((b) => b.text as string)
-        .join(' ')
-        .toLowerCase();
-      if (out.includes('none')) return 'none';
-      if (out.includes('easy')) return 'easy';
-      if (out.includes('hard') || out.includes('high')) return 'high';
-      if (out.includes('medium')) return 'medium';
-      return 'medium';
-    } catch (err) {
-      // Never let a classify failure stall the scan; default to a medium-tier solve.
-      console.warn('[nuclear-learning] classify failed, defaulting to medium:', err);
-      return 'medium';
-    }
-  }
-
-  // The grading path. Classify the problem's difficulty once (cheap Haiku), solve it once on the
-  // tier that difficulty picks and cache the worked checklist, then verify every later scan on
-  // Sonnet against that cache. The verifier is what reads the corner mark and the double-underlined
-  // results; a page with no mark comes back OK and stays silent. When Sonnet judges a marked answer
-  // finished and right, the strong model confirms on the same tier before we acknowledge. The
-  // strong model is never spent on an unfinished page, and Clear moves on to a new problem.
+  // The grading path, fixed models, no classifier. Opus solves the problem once at MEDIUM effort
+  // and caches the worked checklist; Sonnet verifies every later scan against that cache and is what
+  // reads the corner mark and the double-underlined results (no mark -> OK, silent); Opus confirms a
+  // checked answer at LOW effort before we acknowledge. The solve leaves the cache empty and retries
+  // next scan until the question is fully written, then latches. Clear moves on to a new problem.
   async function getFeedbackCached(
     data: string,
     mediaType: ImageMediaType,
@@ -537,20 +477,12 @@ export function useFeedback() {
   ): Promise<string> {
     const wantSkills = settings.api.trackSkills;
 
-    // CLASSIFY difficulty once. "none" means the question is not fully written yet: stay silent.
-    if (cachedDifficulty === '') {
-      const d = await classifyDifficulty(data, mediaType, mode);
-      if (d === 'none') return 'OK';
-      cachedDifficulty = d;
-    }
-
-    // SOLVE once, on the tier the difficulty picks, and cache the checklist. This also grades the
-    // current page, though the corner gate keeps it silent unless a mark is there. Latches once solved.
+    // SOLVE once on Opus (medium), caching the checklist. It also grades the current page, but the
+    // corner gate keeps that silent unless a mark is there.
     if (cachedSolution === '') {
-      const tier = tierFor(cachedDifficulty);
       const r = await callModel(
-        tier.model,
-        tier.effort,
+        settings.api.solveModel,
+        'medium',
         'solve',
         data,
         mediaType,
@@ -583,12 +515,10 @@ export function useFeedback() {
     const rv = gateVerdict(r, mode);
     if (!isCorrect(rv)) return rv;
 
-    // Sonnet judged the marked answer finished and right (corner + double-underlined result):
-    // confirm on the strong model, on the same tier the solve used, before we acknowledge.
-    const ct = tierFor(cachedDifficulty);
+    // Sonnet judged the marked answer finished and right: Opus confirms at LOW effort before we say so.
     const c = await callModel(
-      ct.model,
-      ct.effort,
+      settings.api.confirmModel,
+      'low',
       'confirm',
       data,
       mediaType,
@@ -736,7 +666,6 @@ export function useFeedback() {
     spokenKeys.clear();
     cachedSolution = '';
     cachedProblem = '';
-    cachedDifficulty = '';
     sawCornerLast = false;
     lessonCaptured = false;
     lastCorrection = null;
