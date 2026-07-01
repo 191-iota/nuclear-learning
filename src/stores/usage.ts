@@ -60,7 +60,7 @@ export const usage = reactive(load());
 // Old records (pre-tiering) lack model/role; fall back gracefully so the chart
 // still prices and groups them.
 function recModel(r: UsageRecord): string {
-  return r.model ?? 'gpt-5';
+  return r.model ?? 'o3';
 }
 function recRole(r: UsageRecord): Role {
   return r.role ?? ((r as unknown as { cached?: boolean }).cached ? 'verify' : 'solve');

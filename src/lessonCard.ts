@@ -6,12 +6,12 @@ import { recordUsage } from '@/stores/usage';
  * Writes one tailored review card from a corrected mistake. The live grading loop
  * hands back a one-line nudge meant for self-correction mid-solve; that makes a poor
  * flashcard, because the cue ("recall the mistake you fixed") names nothing specific.
- * So once a problem is solved we spend one explicit, cheap GPT-5 mini call to turn the
+ * So once a problem is solved we spend one explicit, cheap GPT-5.4 mini call to turn the
  * mistake into a real card: a specific recall question on the front, the answer on
  * the back, with the math in LaTeX. Used both when a lesson is first captured and to
  * rebuild older cards that predate this.
  */
-const CARD_MODEL = 'gpt-5-mini';
+const CARD_MODEL = 'gpt-5.4-mini';
 
 const CARD_SCHEMA = {
   type: 'object',

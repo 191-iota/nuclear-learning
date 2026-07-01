@@ -12,12 +12,12 @@
     "chimeError": "error.mp3"
   },
   "api": {
-    "model": "gpt-5",
+    "model": "o3",
     "maxTokens": 8192,
-    "solveModel": "gpt-5",
-    "verifyModel": "gpt-5-mini",
+    "solveModel": "o3",
+    "verifyModel": "gpt-5.4-mini",
     "verifyEffort": "low",
-    "confirmModel": "gpt-5",
+    "confirmModel": "o3",
     "feedbackLang": "English",
     "trackSkills": true,
     "masteryTarget": 0
