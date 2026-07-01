@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import {
   domainRollup,
   rankings,
+  recommendPractice,
   skillSummary,
   trajectory,
   overallTrajectory,
@@ -19,6 +20,7 @@ const summary = computed(() => skillSummary());
 const domains = computed(() => domainRollup());
 const touchedDomains = computed(() => domains.value.filter((d) => d.touched > 0));
 const ranks = computed(() => rankings());
+const rec = computed(() => recommendPractice());
 
 const selectedDomain = ref(OVERALL);
 const traj = computed(() =>
@@ -77,6 +79,23 @@ function domTip(d: DomainRollup): string {
     </div>
 
     <template v-if="summary.coveredKCs > 0">
+      <div v-if="rec.drill || rec.review" class="card rec">
+        <div class="rec-head mono">Practice next</div>
+        <div v-if="rec.drill" class="rec-line">
+          <span class="rec-tag">Work on</span>
+          <strong>{{ rec.drill.label }}</strong>
+          <span class="muted"> — your weakest tracked skill, {{ rec.drill.masteryPct }}% index</span>
+        </div>
+        <div v-if="rec.review" class="rec-line">
+          <span class="rec-tag review">Refresh</span>
+          <strong>{{ rec.review.label }}</strong>
+          <span class="muted"> — strong but fading, last worked {{ rec.review.daysSince }}d ago</span>
+        </div>
+        <div class="muted small rec-aim">
+          Pick problems you would get right about 4 times in 5 — hard enough to stretch, not to stall.
+        </div>
+      </div>
+
       <div class="stat-grid">
         <div class="card stat">
           <div class="k">Coverage</div>
@@ -246,6 +265,37 @@ function domTip(d: DomainRollup): string {
 .domsel .tab {
   padding: 0.25rem 0.55rem;
   font-size: 0.72rem;
+}
+
+.rec {
+  border-left: 3px solid var(--gold);
+}
+.rec-head {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+.rec-line {
+  font-size: 0.82rem;
+  margin: 0.25rem 0;
+}
+.rec-tag {
+  display: inline-block;
+  min-width: 4.2rem;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--gold);
+  margin-right: 0.35rem;
+}
+.rec-tag.review {
+  color: var(--muted);
+}
+.rec-aim {
+  margin-top: 0.45rem;
 }
 
 .rank-grid {

@@ -403,6 +403,20 @@ export function rankings(now = Date.now()) {
   };
 }
 
+export interface PracticeRec {
+  drill: RankRow | null; // weakest touched skill worth practising now (learn / strengthen)
+  review: RankRow | null; // strongest skill going stale, worth a refresh before it fades
+}
+
+// Turn the mastery estimate into an actual recommendation of what to practise next. `drill` is the
+// weakest skill you have touched, `review` the strongest one going stale. This is the thin
+// controller that makes the estimator STEER rather than only report. (A prerequisite ordering would
+// later refine "weakest" into "weakest you are ready for"; that DAG does not exist yet.)
+export function recommendPractice(now = Date.now()): PracticeRec {
+  const r = rankings(now);
+  return { drill: r.drill[0] ?? null, review: r.fading[0] ?? null };
+}
+
 export function skillSummary(now = Date.now()) {
   const dom = domainRollup(now);
   const touchedDomains = dom.filter((d) => d.touched > 0);
@@ -511,6 +525,7 @@ if (typeof window !== 'undefined') {
     all: () => skillStore.kcs,
     domains: () => domainRollup(),
     rankings: () => rankings(),
+    recommend: () => recommendPractice(),
     trajectory: (d: string) => trajectory(d),
     overall: () => overallTrajectory(),
     summary: () => skillSummary(),
