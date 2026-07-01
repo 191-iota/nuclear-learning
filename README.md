@@ -1,53 +1,24 @@
 <p align="center">
-  <img src="docs/banner.png" alt="nuclear·learning, write on paper and get the correction the moment you ask" width="100%">
+  <img src="docs/banner.png" alt="nuclear·learning, write on paper and get the correction the moment you settle on an answer" width="100%">
 </p>
 
 # nuclear-learning
 
-![Vue 3](https://img.shields.io/badge/Vue-3-1a1915?style=flat-square) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-1a1915?style=flat-square) ![Claude vision](https://img.shields.io/badge/Claude-vision-c39a27?style=flat-square) ![Web Bluetooth](https://img.shields.io/badge/Web%20Bluetooth-Chrome%20%2F%20Edge-1a1915?style=flat-square)
+![Vue 3](https://img.shields.io/badge/Vue-3-1a1915?style=flat-square) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-1a1915?style=flat-square) ![GPT-5 vision](https://img.shields.io/badge/GPT--5-vision-c39a27?style=flat-square) ![Web Bluetooth](https://img.shields.io/badge/Web%20Bluetooth-Chrome%20%2F%20Edge-1a1915?style=flat-square)
 
 > You antisocial folks will particularly like this one
 
-Real-time feedback on handwritten work. You write on paper with a Neo Smartpen, the strokes stream into the browser over Bluetooth, and when you want a check you draw a small corner mark next to a line. A moment later that page goes to Claude, which reads the flagged work and answers out loud: a one-line correction if something is off, or a quiet word that it is right. It names the first error and never gives the answer, so you fix it yourself and carry on. Leave the mark off and it stays quiet, however much you write. It is most tuned for mathematics right now; the other subjects work but are lighter.
+Real-time feedback on handwritten work. You write on paper with a Neo Smartpen, the strokes stream into the browser over Bluetooth, and the model checks your work as you go. When you settle on a result it speaks a one-line correction if something is off, and when a problem is finished and right it says so out loud. It names the first error and never gives the answer, so you fix it yourself and carry on, and it stays quiet while a line is still mid-working. It is most tuned for mathematics right now; the other subjects work but are lighter.
 
 <p align="center">
   <img src="docs/app.png" alt="the app: a problem on the pad with the app's hint in the status bar" width="880">
 </p>
 
-## Drawing a corner to ask
-
-The corner mark is the whole interface for feedback. Draw a small right-angle hook beside a line and the app looks at it: if a result is wrong it speaks the first step to check, and if the work is finished and right it says so, without stamping it done. It reads the mathematics aloud as words rather than symbols, so a hint comes through as "x squared" or "the square root of two", in English or Swiss German. When you catch your own slip, mark it "falsch" and draw an arrow to a redo, it leaves you alone until the redo settles. A problem is only acknowledged correct once every part carries its own double-underlined answer.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/corner-dark.svg">
-    <img src="docs/corner.svg" alt="with no corner mark the app stays silent and only tracks progress; with a corner mark it speaks a correction if the work is wrong, or says it is correct without marking it" width="820">
-  </picture>
-</p>
-
 ## How it works
 
-The pen streams (x, y, pressure) points over Web Bluetooth onto a canvas. When you pause, the page is cropped to just the ink and sent to the Claude API as a vision message. There is no OCR step; Claude reads the ink directly.
+The pen streams (x, y, pressure) points over Web Bluetooth onto a canvas. When you pause, the page is cropped to just the ink and sent to the OpenAI API as a vision message. There is no OCR step; the model reads the ink directly.
 
-Cost stays low because the app only spends when there is something to do. On every scan a cheap model does two small jobs, checking whether the whole question is written yet and whether you have drawn a corner mark. The moment the question is complete it solves it once on a strong model and keeps that answer as a checklist, ready and waiting. Then nothing more runs until you mark a line, and only then does a cheaper model verify your work against the checklist and the strong model sign off before it speaks. So writing the question and working through it barely cost, and the heavy checking only happens on the lines you flag.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/routing-dark.svg">
-    <img src="docs/routing.svg" alt="a cheap Haiku check runs every scan; when the whole question is written it pre-solves once on Opus and caches it, and your corner mark then wakes a Sonnet verify and an Opus confirm before it speaks" width="820">
-  </picture>
-</p>
-
-## The full loop
-
-Every scan runs one pass through the same gate, and this is the whole of it, from a blank page to a solved problem. The cheap watcher decides whether anything expensive runs, the corner mark decides whether you hear about it, and the difficulty tier decides which model does the work. So an easy problem is graded from start to finish without ever touching Opus.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/flow-dark.svg">
-    <img src="docs/flow.svg" alt="the full math decision flow: a Haiku gate on every scan reads whether the question is set, whether a corner mark is drawn, and the difficulty; it pre-solves and caches once the question is complete, stays silent until there is a corner mark, then verifies on Sonnet and confirms on the difficulty tier, speaking a first-step correction, what is still open, or Correct before auto-clearing" width="720">
-  </picture>
-</p>
+The moment the whole question is written, GPT-5 solves it once and keeps that answer as a checklist. From then on GPT-5 mini verifies every scan against the checklist, staying quiet while a line is mid-working and speaking the first wrong step once you settle on a result. GPT-5 signs off a finished, correct answer before it says so. So the strong model runs twice per problem, once to solve and once to confirm, and the cheap one carries the repetitive middle. It reads the mathematics aloud as words rather than symbols, so a hint comes through as "x squared" or "the square root of two", in English or Swiss German.
 
 ## What it remembers
 
@@ -62,7 +33,7 @@ Every mistake you fix is kept as a review card, built from your own error and th
 
 ## Modes
 
-A mode is a system prompt plus a few settings, edited live in the Presets tab or in `config/modes.json`. Maths ships with the full loop above: the corner-mark trigger, the tiered models, and the skill map. Chemistry, German, and freeform note-reading ship as lighter graders. To add one, append an object, no code changes either way:
+A mode is a system prompt plus a few settings, edited live in the Presets tab or in `config/modes.json`. Maths ships with the full solve-then-verify loop above and the skill map; chemistry, German, and freeform note-reading ship as lighter graders. To add one, append an object, no code changes either way:
 
 ```json
 {
@@ -70,12 +41,12 @@ A mode is a system prompt plus a few settings, edited live in the Presets tab or
   "label": "Physics",
   "feedbackStyle": "both",
   "debounceMs": 1200,
-  "cornerGated": true,
+  "cacheSolution": true,
   "systemPrompt": "You are checking handwritten physics working. Reply OK while it is correct but unfinished, CORRECT when finished and right, otherwise name the first error in one short sentence."
 }
 ```
 
-`feedbackStyle` is `"spoken"`, `"chime"`, or `"both"`; `debounceMs` is the pause before a check; `cornerGated` holds a mode's comments until you draw a corner, the way maths does. The engine settings, models, effort, and prices live in `config/settings.json` and the same panel.
+`feedbackStyle` is `"spoken"`, `"chime"`, or `"both"`; `debounceMs` is the pause before a check; `cacheSolution` turns on the solve-once-then-verify loop (leave it off for a plain one-shot grader). The engine settings, models, effort, and prices live in `config/settings.json` and the same panel.
 
 ## Run it
 
@@ -83,11 +54,11 @@ You need Node and a Chromium-based browser. Web Bluetooth is not in Safari or Fi
 
 ```bash
 npm install
-cp .env.example .env   # then add your Anthropic API key
+cp .env.example .env   # then add your OpenAI API key
 npm run dev
 ```
 
-Open the printed URL, connect the pen, pick a mode, and write. Pairing only works over `localhost` or `https`, and on macOS the browser needs Bluetooth permission. Once paired, the pen reconnects on its own. The key is read from `VITE_ANTHROPIC_API_KEY` and used from the browser, so keep it local and use one you can rotate.
+Open the printed URL, connect the pen, pick a mode, and write. Pairing only works over `localhost` or `https`, and on macOS the browser needs Bluetooth permission. Once paired, the pen reconnects on its own. The key is read from `VITE_OPENAI_API_KEY` and used from the browser, so keep it local and use one you can rotate.
 
 ## Hardware
 

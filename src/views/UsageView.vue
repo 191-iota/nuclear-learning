@@ -145,7 +145,7 @@ function barLabel(s: ProblemBar, i: number): string {
         </div>
         <div class="legend">
           <span><span class="dot" style="background: var(--chart-in)" />Input (image + prompt)</span>
-          <span><span class="dot" style="background: var(--chart-out)" />Output (thinking + reply)</span>
+          <span><span class="dot" style="background: var(--chart-out)" />Output (reasoning + reply)</span>
         </div>
       </div>
 
@@ -157,7 +157,7 @@ function barLabel(s: ProblemBar, i: number): string {
         stay in the cards above. A strong model solves and signs off while a cheaper one runs the
         repetitive middle checks. Solve and confirm also carry the skill tagging that feeds Progress, so
         it rides those rows rather than adding its own; lesson cards are the one separate call, on
-        Sonnet, written once per mistake you fix.
+        GPT-5 mini, written once per mistake you fix.
       </p>
     </template>
 

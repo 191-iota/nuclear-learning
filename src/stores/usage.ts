@@ -11,15 +11,14 @@ import { modelInfo } from '@/models';
  *
  * Console access:  __nlUsage.summary() · __nlUsage.records() · __nlUsage.clear()
  */
-export type Role = 'gate' | 'solve' | 'verify' | 'confirm' | 'classify' | 'lesson';
+export type Role = 'ready' | 'solve' | 'verify' | 'confirm' | 'lesson';
 
 // Human labels for the per-purpose breakdown.
 export const ROLE_LABEL: Record<Role, string> = {
-  gate: 'Corner check',
+  ready: 'Ready check',
   solve: 'Solve',
   verify: 'Verify',
   confirm: 'Confirm',
-  classify: 'Classify',
   lesson: 'Lesson cards',
 };
 
@@ -61,7 +60,7 @@ export const usage = reactive(load());
 // Old records (pre-tiering) lack model/role; fall back gracefully so the chart
 // still prices and groups them.
 function recModel(r: UsageRecord): string {
-  return r.model ?? 'claude-opus-4-8';
+  return r.model ?? 'gpt-5';
 }
 function recRole(r: UsageRecord): Role {
   return r.role ?? ((r as unknown as { cached?: boolean }).cached ? 'verify' : 'solve');

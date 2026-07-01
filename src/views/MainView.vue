@@ -157,7 +157,7 @@ async function runFeedback() {
       status.value = '';
       return;
     }
-    status.value = err?.message ?? 'Error contacting Claude.';
+    status.value = err?.message ?? 'Error contacting OpenAI.';
   } finally {
     requesting.value = false;
     // Drain queued work if any arrived. This must NOT be gated on the finishing

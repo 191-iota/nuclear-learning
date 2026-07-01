@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { settings } from '@/stores/settings';
 import { mathToSpeech } from '@/mathSpeech';
 import type { Mode } from '@/types';
@@ -50,7 +50,7 @@ const SKILL_SOLUTION_SCHEMA = {
   required: ['problem', 'solution', 'verdict', 'correction', 'difficulty', 'skills'],
   properties: {
     ...SOLUTION_SCHEMA.properties,
-    difficulty: { enum: [1, 2, 3, 4, 5] },
+    difficulty: { type: 'integer', enum: [1, 2, 3, 4, 5] },
     skills: {
       type: 'array',
       items: {
@@ -58,26 +58,25 @@ const SKILL_SOLUTION_SCHEMA = {
         additionalProperties: false,
         required: ['id', 'role', 'signal'],
         properties: {
-          id: { enum: KC_IDS },
-          role: { enum: ['core', 'support'] },
-          signal: { enum: ['none', 'clean', 'shaky', 'wrong'] },
+          id: { type: 'string', enum: KC_IDS },
+          role: { type: 'string', enum: ['core', 'support'] },
+          signal: { type: 'string', enum: ['none', 'clean', 'shaky', 'wrong'] },
         },
       },
     },
   },
 };
 
-let client: Anthropic | null = null;
+let client: OpenAI | null = null;
 
-function getClient(): Anthropic {
+function getClient(): OpenAI {
   if (!client) {
-    const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+    const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
     if (!apiKey) {
-      throw new Error('Missing VITE_ANTHROPIC_API_KEY. Copy .env.example to .env and add your key.');
+      throw new Error('Missing VITE_OPENAI_API_KEY. Copy .env.example to .env and add your key.');
     }
-    // Bound each request so a stalled call can't freeze the feedback loop
-    // (the default SDK timeout is 10 minutes).
-    client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, timeout: 30000, maxRetries: 1 });
+    // Bound each request so a stalled call can't freeze the feedback loop.
+    client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true, timeout: 30000, maxRetries: 1 });
   }
   return client;
 }
@@ -174,10 +173,10 @@ export function useFeedback() {
       mode: mode.id,
       model,
       role,
-      input: u.input_tokens ?? 0,
-      output: u.output_tokens ?? 0,
-      cacheRead: u.cache_read_input_tokens ?? 0,
-      cacheCreate: u.cache_creation_input_tokens ?? 0,
+      input: u.prompt_tokens ?? 0,
+      output: u.completion_tokens ?? 0, // includes reasoning tokens
+      cacheRead: u.prompt_tokens_details?.cached_tokens ?? 0,
+      cacheCreate: 0, // OpenAI has no separate cache-write charge
     });
   }
 
@@ -289,29 +288,23 @@ export function useFeedback() {
     mediaType: ImageMediaType,
     mode: Mode,
   ): Promise<string> {
-    const effort = settings.api.solveEffort;
-    const resp = await getClient().messages.create({
+    const resp = await getClient().chat.completions.create({
       model: settings.api.model,
-      max_tokens: settings.api.maxTokens,
-      thinking: { type: 'adaptive' },
-      output_config: { effort } as any,
-      system: mode.systemPrompt,
+      max_completion_tokens: settings.api.maxTokens,
+      reasoning_effort: settings.api.verifyEffort,
       messages: [
+        { role: 'system', content: mode.systemPrompt },
         {
           role: 'user',
           content: [
-            { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
             { type: 'text', text: buildContext(mode) },
+            { type: 'image_url', image_url: { url: `data:${mediaType};base64,${data}` } },
           ],
         },
       ],
-    });
+    } as any);
     logUsage(resp, mode, settings.api.model, 'verify');
-    return (resp.content as any[])
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text as string)
-      .join(' ')
-      .trim();
+    return (resp.choices?.[0]?.message?.content ?? '').trim();
   }
 
   // Per-request context for the solve-once-then-verify path. When a solution is
@@ -373,48 +366,36 @@ export function useFeedback() {
     const info = modelInfo(model);
     const useEffort = info.effort && !!effort;
     const tag = tagSkills && settings.api.trackSkills;
-    const output_config: any = {
-      format: { type: 'json_schema', schema: tag ? SKILL_SOLUTION_SCHEMA : SOLUTION_SCHEMA },
-    };
-    if (useEffort) output_config.effort = effort;
-    // The skill-assessor block is byte-identical across every call and mode, so it sits
-    // first with cache_control and is a cache-prefix read after the first call.
-    const system: any = tag
-      ? [
-          { type: 'text', text: SKILL_ASSESSOR, cache_control: { type: 'ephemeral' } },
-          { type: 'text', text: mode.systemPrompt },
-        ]
-      : mode.systemPrompt;
+    const schema = tag ? SKILL_SOLUTION_SCHEMA : SOLUTION_SCHEMA;
+    // The skill-assessor block is byte-identical across every call, so it leads the system prompt as
+    // a stable prefix that OpenAI's automatic prompt caching can reuse after the first call.
+    const system = tag ? `${SKILL_ASSESSOR}\n\n${mode.systemPrompt}` : mode.systemPrompt;
     const params: any = {
       model,
-      max_tokens: settings.api.maxTokens,
-      system,
+      max_completion_tokens: settings.api.maxTokens,
       messages: [
+        { role: 'system', content: system },
         {
           role: 'user',
           content: [
-            { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
             { type: 'text', text },
+            { type: 'image_url', image_url: { url: `data:${mediaType};base64,${data}` } },
           ],
         },
       ],
-      output_config,
+      response_format: { type: 'json_schema', json_schema: { name: 'feedback', strict: true, schema } },
     };
-    if (useEffort) params.thinking = { type: 'adaptive' };
+    if (useEffort) params.reasoning_effort = effort;
 
-    const resp = await getClient().messages.create(params);
+    const resp = await getClient().chat.completions.create(params);
     logUsage(resp, mode, model, role);
-    const out = (resp.content as any[])
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text as string)
-      .join('')
-      .trim();
+    const out = (resp.choices?.[0]?.message?.content ?? '').trim();
     let parsed: any;
     try {
       parsed = JSON.parse(out);
     } catch {
-      // A non-JSON reply carries no corner-mark signal, so a gated mode treats it as OK.
-      return { problem: '', solution: '', verdict: out, correction: { wrong: '', right: '' } };
+      // A non-JSON or refused reply carries no verdict, so treat it as OK (stay silent).
+      return { problem: '', solution: '', verdict: 'OK', correction: { wrong: '', right: '' } };
     }
     const correction = {
       wrong: (parsed?.correction?.wrong ?? '').trim(),
@@ -453,30 +434,30 @@ export function useFeedback() {
   async function checkReady(data: string, mediaType: ImageMediaType, mode: Mode): Promise<boolean> {
     const model = settings.api.verifyModel;
     try {
-      const resp = await getClient().messages.create(
+      const resp = await getClient().chat.completions.create(
         {
           model,
-          max_tokens: 16,
-          system:
-            'You look at a photo of handwritten math work and decide ONLY whether the full problem statement the learner is working on is written out completely enough to be solved (the whole question, not just a heading, a label, or a half-written line). Reply with EXACTLY ONE word: "ready" if it is, or "wait" if the question is still incomplete or you cannot tell.',
+          max_completion_tokens: 600,
+          reasoning_effort: 'minimal',
           messages: [
+            {
+              role: 'system',
+              content:
+                'You look at a photo of handwritten math work and decide ONLY whether the full problem statement the learner is working on is written out completely enough to be solved (the whole question, not just a heading, a label, or a half-written line). Reply with EXACTLY ONE word: "ready" if it is, or "wait" if the question is still incomplete or you cannot tell.',
+            },
             {
               role: 'user',
               content: [
-                { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
                 { type: 'text', text: 'One word: ready or wait.' },
+                { type: 'image_url', image_url: { url: `data:${mediaType};base64,${data}` } },
               ],
             },
           ],
         } as any,
         { timeout: 12000 },
       );
-      logUsage(resp, mode, model, 'classify');
-      const out = (resp.content as any[])
-        .filter((b) => b.type === 'text')
-        .map((b) => b.text as string)
-        .join(' ')
-        .toLowerCase();
+      logUsage(resp, mode, model, 'ready');
+      const out = (resp.choices?.[0]?.message?.content ?? '').toLowerCase();
       if (out.includes('wait')) return false;
       return out.includes('ready');
     } catch (err) {

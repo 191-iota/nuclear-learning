@@ -20,22 +20,36 @@ const STYLES = ['spoken', 'chime', 'both'];
         <summary>
           <span class="summary-label">Engine</span>
           <span class="summary-meta">
-            {{ settings.api.routing }} · solve {{ settings.api.solveModel.replace('claude-', '') }}
+            solve {{ settings.api.solveModel }} · verify {{ settings.api.verifyModel }}
           </span>
         </summary>
         <div class="config-body">
           <div class="eng-row">
             <div class="field span-2">
-              <label>Routing</label>
-              <select v-model="settings.api.routing">
-                <option value="manual">Manual (tiered)</option>
-                <option value="auto">Automatic (by complexity)</option>
+              <label>Solve model</label>
+              <select v-model="settings.api.solveModel">
+                <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
               </select>
             </div>
             <div class="field span-2">
-              <label>Classify model (auto)</label>
-              <select v-model="settings.api.classifyModel">
+              <label>Verify model (cheap)</label>
+              <select v-model="settings.api.verifyModel">
                 <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
+              </select>
+            </div>
+            <div class="field span-2">
+              <label>Confirm model</label>
+              <select v-model="settings.api.confirmModel">
+                <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="eng-row">
+            <div class="field span-2">
+              <label>Verify effort</label>
+              <select v-model="settings.api.verifyEffort">
+                <option v-for="e in EFFORTS" :key="e" :value="e">{{ e }}</option>
               </select>
             </div>
             <div class="field span-2">
@@ -45,49 +59,7 @@ const STYLES = ['spoken', 'chime', 'both'];
                 <option value="German">German</option>
               </select>
             </div>
-          </div>
-
-          <div class="eng-row">
             <div class="field span-2">
-              <label>Solve model</label>
-              <select v-model="settings.api.solveModel">
-                <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>Solve effort</label>
-              <select v-model="settings.api.solveEffort">
-                <option v-for="e in EFFORTS" :key="e" :value="e">{{ e }}</option>
-              </select>
-            </div>
-            <div class="field span-2">
-              <label>Confirm model</label>
-              <select v-model="settings.api.confirmModel">
-                <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>Confirm effort</label>
-              <select v-model="settings.api.confirmEffort">
-                <option v-for="e in EFFORTS" :key="e" :value="e">{{ e }}</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="eng-row">
-            <div class="field span-2">
-              <label>Verify model (cheap)</label>
-              <select v-model="settings.api.verifyModel">
-                <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>Verify effort</label>
-              <select v-model="settings.api.verifyEffort">
-                <option v-for="e in EFFORTS" :key="e" :value="e">{{ e }}</option>
-              </select>
-            </div>
-            <div class="field span-3">
               <label>Max tokens</label>
               <input v-model.number="settings.api.maxTokens" type="number" min="256" step="256" />
             </div>
@@ -135,17 +107,16 @@ const STYLES = ['spoken', 'chime', 'both'];
               Track skill mastery (Progress tab)
             </label>
             <span class="muted" style="font-size: 0.7rem; flex: 1; min-width: 14rem">
-              Tags each solved math problem against a fixed skill map on the Opus call that already
+              Tags each solved math problem against a fixed skill map on the solve call that already
               runs, so it adds no request. Off stops the Progress tab from updating.
             </span>
           </div>
 
           <div class="row" style="margin-top: 0.8rem">
             <span class="muted" style="font-size: 0.72rem">
-              Manual: solve &amp; confirm on the capable model, routine verify on the cheap one.
-              Automatic: a classify call picks the difficulty, then the solve model both solves
-              (low effort if simple, your solve effort if complex) and checks (confirm effort).
-              Prices come from the model, so the Usage cost is exact per scan.
+              The solve model works each problem out once and the confirm model signs off a finished
+              answer; the cheap verify model checks every scan in between. Prices come from the
+              model, so the Usage cost is exact per scan.
             </span>
             <span class="spacer" />
             <button class="ghost" @click="resetSettings">Reset engine</button>
