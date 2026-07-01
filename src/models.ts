@@ -9,6 +9,7 @@ export interface ModelInfo {
 }
 
 export const MODELS: ModelInfo[] = [
+  { id: 'claude-opus-4-6', label: 'Opus 4.6', in: 5, out: 25, effort: true },
   { id: 'claude-opus-4-8', label: 'Opus 4.8', in: 5, out: 25, effort: true },
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', in: 3, out: 15, effort: true },
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5', in: 1, out: 5, effort: false },
