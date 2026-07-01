@@ -29,12 +29,12 @@ The corner mark is the whole interface for feedback. Draw a small right-angle ho
 
 The pen streams (x, y, pressure) points over Web Bluetooth onto a canvas. When you pause, the page is cropped to just the ink and sent to the Claude API as a vision message. There is no OCR step; Claude reads the ink directly.
 
-Cost stays low because the app only spends on what you ask for. On every scan a cheap model does one small job, looking for your corner mark, and until it sees one nothing else runs. The moment you mark a line the real work wakes up: a strong model solves the problem once and keeps the answer as a checklist, a cheaper one verifies your work against it, and the strong model signs off before it speaks. So writing and pausing to think barely cost, and the expensive models run only on the lines you flag.
+Cost stays low because the app only spends when there is something to do. On every scan a cheap model does two small jobs, checking whether the whole question is written yet and whether you have drawn a corner mark. The moment the question is complete it solves it once on a strong model and keeps that answer as a checklist, ready and waiting. Then nothing more runs until you mark a line, and only then does a cheaper model verify your work against the checklist and the strong model sign off before it speaks. So writing the question and working through it barely cost, and the heavy checking only happens on the lines you flag.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/routing-dark.svg">
-    <img src="docs/routing.svg" alt="a cheap Haiku corner check runs every scan; only when you mark a line does the strong pipeline wake: an Opus solve once, a Sonnet verify, an Opus confirm, then it speaks" width="820">
+    <img src="docs/routing.svg" alt="a cheap Haiku check runs every scan; when the whole question is written it pre-solves once on Opus and caches it, and your corner mark then wakes a Sonnet verify and an Opus confirm before it speaks" width="820">
   </picture>
 </p>
 

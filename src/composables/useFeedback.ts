@@ -70,19 +70,20 @@ const SKILL_SOLUTION_SCHEMA = {
   },
 };
 
-// The gatekeeper schema: the cheap corner-detector reports only these two booleans, never a grade.
+// The gatekeeper schema: the cheap watcher reports these two booleans, never a grade. One says the
+// full question is written and ready to solve; the other says a corner mark asks for feedback.
 const GATE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['cornerMark', 'doubleUnderline'],
+  required: ['questionReady', 'cornerMark'],
   properties: {
+    questionReady: { type: 'boolean' },
     cornerMark: { type: 'boolean' },
-    doubleUnderline: { type: 'boolean' },
   },
 };
 
 const GATE_PROMPT =
-  'You look at a photo of handwritten work and report ONLY two things, without judging the mathematics at all: (1) cornerMark: whether the learner has drawn a CORNER MARK on the page, a small hand-drawn right-angle hook (an L, a corner bracket, two short strokes meeting at a right angle) placed beside or beneath a line as a deliberate annotation, separate from the mathematics, and NOT a right angle that belongs to the work (a geometry figure, the corner of a bracket or fraction bar, a capital-L variable) and NOT an arrow used to redo a line; (2) doubleUnderline: whether any result is underlined with a double line. If you are not sure you see a corner mark, report false. Reply with a JSON object {"cornerMark": boolean, "doubleUnderline": boolean} and nothing else.';
+  'You look at a photo of handwritten work and report TWO things as JSON, without solving or grading anything: (1) questionReady: whether the full problem statement the learner is working on is written out completely enough to be solved (the whole question, not just a label, a heading, or a half-written line); (2) cornerMark: whether the learner has drawn a CORNER MARK, a small hand-drawn right-angle hook (an L, a corner bracket, two short strokes meeting at a right angle) placed beside a line as a deliberate annotation, separate from the mathematics, and NOT a right angle that belongs to the work or an arrow used to redo a line. If you are unsure about either, report false for it. Reply with a JSON object {"questionReady": boolean, "cornerMark": boolean} and nothing else.';
 
 let client: Anthropic | null = null;
 
@@ -471,11 +472,15 @@ export function useFeedback() {
     return mode.cornerGated && reply.cornerMark !== true ? 'OK' : reply.verdict;
   }
 
-  // The gatekeeper. The cheapest model looks at the page and reports ONLY whether a corner mark is
-  // there (the learner's request for feedback); it never judges the mathematics, so it is a tiny,
-  // constant call. A missing or malformed reply is read as no mark, so the safe default is silence
-  // and no spend on the strong models.
-  async function sawCornerMark(data: string, mediaType: ImageMediaType, mode: Mode): Promise<boolean> {
+  // The gatekeeper. The cheapest model looks at the page and reports two things without grading:
+  // whether the full question is written out (ready to solve) and whether a corner mark is there
+  // (the learner's request for feedback). It is a tiny constant call run on every scan. A missing
+  // or malformed reply is read as "not ready, no mark", so the safe default is to spend nothing.
+  async function checkGate(
+    data: string,
+    mediaType: ImageMediaType,
+    mode: Mode,
+  ): Promise<{ questionReady: boolean; cornerMark: boolean }> {
     const model = settings.api.gateModel;
     try {
       const resp = await getClient().messages.create(
@@ -488,7 +493,7 @@ export function useFeedback() {
               role: 'user',
               content: [
                 { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
-                { type: 'text', text: 'Report cornerMark and doubleUnderline as JSON.' },
+                { type: 'text', text: 'Report questionReady and cornerMark as JSON.' },
               ],
             },
           ],
@@ -502,10 +507,11 @@ export function useFeedback() {
         .map((b) => b.text as string)
         .join('')
         .trim();
-      return JSON.parse(out)?.cornerMark === true;
+      const parsed = JSON.parse(out);
+      return { questionReady: parsed?.questionReady === true, cornerMark: parsed?.cornerMark === true };
     } catch (err) {
-      console.warn('[nuclear-learning] corner gate failed, staying silent:', err);
-      return false;
+      console.warn('[nuclear-learning] gate check failed, staying silent:', err);
+      return { questionReady: false, cornerMark: false };
     }
   }
 
@@ -638,19 +644,21 @@ export function useFeedback() {
     mediaType: ImageMediaType,
     mode: Mode,
   ): Promise<string> {
-    // Cheap gatekeeper: a Haiku pass whose ONLY job is to spot the corner mark. Until one is
-    // present, nothing expensive runs (no Opus solve, no Sonnet verify), so writing and pausing to
-    // think cost almost nothing. It never judges the mathematics.
-    if (mode.cornerGated && !(await sawCornerMark(data, mediaType, mode))) return 'OK';
     if (settings.api.routing === 'auto') return getFeedbackAuto(data, mediaType, mode);
     const wantSkills = settings.api.trackSkills;
 
-    // SOLVE, only while there is no cached solution. Latches once solved. One call:
-    // it solves, caches the key, AND grades the current page (buildCachedContext(false)
-    // tells it to chime CORRECT / name the first error when a finished answer is already
-    // present), so a page that was complete before the first scan is graded right here.
-    // It also tags the skill membership (and the signal, if the page is already done).
-    if (cachedSolution === '') {
+    // Cheap gatekeeper, every scan: a Haiku pass that reports whether the full question is written
+    // out (ready to solve) and whether a corner mark is present. It never grades the mathematics.
+    const gate = mode.cornerGated
+      ? await checkGate(data, mediaType, mode)
+      : { questionReady: true, cornerMark: true };
+
+    // PRE-SOLVE. The moment the whole question is on the page, solve it once on the strong model and
+    // cache the checklist, so the first corner check is instant. The solve re-checks completeness
+    // itself (buildCachedContext(false) tells it to leave the solution empty if the statement is not
+    // fully there), so a Haiku false start just leaves the cache empty and we try again. This also
+    // grades the current work, but the corner gate keeps it silent unless a mark is present.
+    if (cachedSolution === '' && gate.questionReady) {
       const r = await callModel(
         settings.api.solveModel,
         settings.api.solveEffort,
@@ -666,9 +674,14 @@ export function useFeedback() {
       lastSteps = solutionSteps();
       recordMembership(r);
       const v = gateVerdict(r, mode);
-      if (isCorrect(v)) captureSkills(r); // first-try-correct, only with a corner mark
+      if (isCorrect(v)) captureSkills(r); // graded here, but silent without a corner mark
       return v;
     }
+    // The question is still going in (nothing complete to solve yet): stay silent and cheap.
+    if (cachedSolution === '') return 'OK';
+
+    // Solution cached. From here it is the normal corner-gated flow: a verdict only when you ask.
+    if (mode.cornerGated && !gate.cornerMark) return 'OK';
 
     // VERIFY on Sonnet against the cached solution, escalating a claimed completion to Opus to
     // confirm before we acknowledge. The Haiku gatekeeper above already ensured a corner mark is
