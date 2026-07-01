@@ -8,6 +8,7 @@ import {
   removeLesson,
   clearLessons,
   regenerateCards,
+  isBadFront,
   type Lesson,
 } from '@/stores/lessons';
 import MathText from '@/components/MathText.vue';
@@ -16,8 +17,8 @@ const stats = computed(() => lessonStats());
 const all = computed(() => [...lessonStore.lessons].sort((a, b) => b.ts - a.ts));
 
 // Cards captured before the tailored-card writer existed (or when its call failed)
-// have no `front`. Offer a one-click rebuild that backfills them on Sonnet.
-const needsCard = computed(() => lessonStore.lessons.filter((l) => !l.front).length);
+// have no `front` or a bad one (answer copied onto the front). Rebuild backfills them on gpt-5.4 mini.
+const needsCard = computed(() => lessonStore.lessons.filter(isBadFront).length);
 const rebuilding = ref(false);
 async function rebuild() {
   if (rebuilding.value) return;

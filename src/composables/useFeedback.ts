@@ -211,7 +211,7 @@ export function useFeedback() {
   // Lesson capture: the moment a problem turns CORRECT after an error, the error and
   // the worked solution are already in hand from this scan. One per problem; nothing
   // is captured when the work was right the first time. The card itself is written by
-  // a dedicated Sonnet call (a specific recall question, not the cryptic live nudge);
+  // a dedicated gpt-5.4-mini call (a specific recall question, not the cryptic live nudge);
   // that runs fire-and-forget so the chime is never delayed, and the inputs are snap-
   // shotted now because the session state may move on before it resolves.
   function maybeCaptureLesson(verdict: string, mode: Mode): void {
@@ -495,10 +495,10 @@ export function useFeedback() {
     );
     if (!isCorrect(r.verdict)) return r.verdict;
 
-    // Sonnet judged the answer finished and right: Opus confirms at LOW effort before we say so.
+    // The verify judged the answer finished and right: gpt-5.4 confirms at low effort before we say so.
     const c = await callModel(
       settings.api.confirmModel,
-      'medium',
+      'low',
       'confirm',
       data,
       mediaType,

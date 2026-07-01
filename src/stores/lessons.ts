@@ -27,7 +27,7 @@ export interface Lesson {
   // `mistake`.
   wrong?: string;
   right?: string;
-  // Tailored review card written by a dedicated Sonnet call (see lessonCard.ts):
+  // Tailored review card written by a dedicated gpt-5.4-mini call (see lessonCard.ts):
   // `front` is a specific recall question, `back` the answer, both with math in LaTeX.
   // Optional; cards captured before this, or when the call failed, fall back to the
   // correction / hint. `regenerateCards()` backfills them.
@@ -97,6 +97,16 @@ function norm(s: string): string {
 // live in the deck; drop any that slipped in before capture filtered them out.
 function isReadNudge(s: string): boolean {
   return /can.?t read|rewrite it|illegible|unleserlich|nicht lesen/i.test(s);
+}
+
+// A card front is "bad" if empty, or a bare expression (the answer copied onto the front with no
+// natural-language prose) — the exact regression the weak card writer produced. Used to flag cards
+// for Rebuild (mirrors the generator's own reject guard in lessonCard.ts).
+export function isBadFront(l: Lesson): boolean {
+  const f = (l.front ?? '').trim();
+  if (!f) return true;
+  const prose = /[a-zA-ZäöüÄÖÜ]{2,}/.test(f.replace(/\$[^$]*\$/g, ' '));
+  return !f.includes('?') && !prose;
 }
 
 let counter = 0;
@@ -207,14 +217,14 @@ export function dueLessons(now = Date.now()): Lesson[] {
 }
 
 /**
- * Backfill tailored cards onto stored lessons by calling the Sonnet card writer for
+ * Backfill tailored cards onto stored lessons by calling the gpt-5.4-mini card writer for
  * each one. By default it only touches lessons without a `front` (the old cards), so
  * it is cheap and safe to run repeatedly; pass `force` to rewrite every card. Runs
  * sequentially and persists after each so progress is never lost. Returns how many it
  * filled. Exposed as `__nlLessons.rebuild()`.
  */
 export async function regenerateCards(force = false): Promise<number> {
-  const targets = lessonStore.lessons.filter((l) => force || !l.front);
+  const targets = lessonStore.lessons.filter((l) => force || isBadFront(l));
   let done = 0;
   for (const l of targets) {
     const card = await generateLessonCard({

@@ -6,10 +6,11 @@ import { recordUsage } from '@/stores/usage';
  * Writes one tailored review card from a corrected mistake. The live grading loop
  * hands back a one-line nudge meant for self-correction mid-solve; that makes a poor
  * flashcard, because the cue ("recall the mistake you fixed") names nothing specific.
- * So once a problem is solved we spend one explicit, cheap GPT-5.4 mini call to turn the
+ * So once a problem is solved we spend one explicit GPT-5.4 mini (high-effort) call to turn the
  * mistake into a real card: a specific recall question on the front, the answer on
- * the back, with the math in LaTeX. Used both when a lesson is first captured and to
- * rebuild older cards that predate this.
+ * the back, with the math in LaTeX. It writes the HARDEST transform in the app (invent a recall
+ * question that isolates the slip and withholds the answer), so it runs at HIGH reasoning effort.
+ * Used both when a lesson is first captured and to rebuild older cards.
  */
 const CARD_MODEL = 'gpt-5.4-mini';
 
@@ -23,12 +24,25 @@ const CARD_SCHEMA = {
   },
 };
 
-const SYSTEM = `You turn a mistake a learner just made and corrected into ONE spaced-repetition flashcard, so they can re-test the exact thing they got wrong. You are given the problem, its worked solution, the error that was flagged, and sometimes the correction.
+const SYSTEM = `You turn a math mistake a learner just made and corrected into ONE spaced-repetition flashcard that re-tests the EXACT thing they got wrong.
 
-Return JSON {front, back}:
-- "front": a SPECIFIC, self-contained question that tests the precise point the learner got wrong, phrased so they have to recall the answer themselves. Name the concrete case: the exact sub-part, expression, identity, rule, or step. Never a vague "what was your mistake" and never the bare problem statement. Do NOT reveal the answer on the front.
-- "back": the correct answer, with a one-line reason, and you may name what they had wrong.
-Write ALL mathematics in LaTeX between single $ delimiters (for example $a\\cdot\\bar a = 0$ or $x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}$). Keep each side to one or two short lines.`;
+You are given: the problem, its full worked solution (context for YOU only — never quote its final answer on the front), the error that was flagged, and SOMETIMES an explicit correction (wrong vs right).
+
+Return JSON {front, back}.
+
+"front" — a SPECIFIC prompt that makes the learner reproduce the ONE step, identity, sign, or rule they got wrong.
+- It may be a question, a compute-imperative ("Simplify ...", "Solve ... for a"), or a cloze/fill-in ("... = ?"), but it MUST contain natural-language words, not be a bare expression.
+- Name the concrete case: the exact sub-expression / identity / step. Never "what was your mistake", never the plain problem statement.
+- HARD RULE: the front must NOT contain the final answer or the corrected result, and must NOT be an expression copied verbatim from the worked solution. If the answer can be read straight off the front, rewrite it. front and back must never be the same expression.
+- If no explicit correction is given, work out the specific slip yourself from the worked solution and prompt for THAT step — do not paste a line of the solution as the front.
+
+"back" — the correct result, plus a one-line reason; you may name what they had wrong.
+
+One slip per card — never bundle sub-parts a, b, c. Write ALL mathematics in LaTeX between single $ delimiters. Keep each side to one or two short lines. Write the card in the SAME language as the flagged error and correction below.
+
+GOOD (shape, not language): front "Simplify $\\frac{1}{x-y}-\\frac{1}{y-x}$ — what sign does the second term take?"  back "$+\\frac{1}{x-y}$, giving $\\frac{2}{x-y}$, because $\\frac{1}{y-x}=-\\frac{1}{x-y}$ (the sign was flipped)."
+GOOD: front "Write the pure-repeating decimal $0.\\overline{145}$ as a fraction."  back "$\\frac{145}{999}$ — three nines, because the period is three digits."
+FORBIDDEN front "$\\frac{(2w-v)a}{-2(v-w)-k}$" — that is the ANSWER, not a prompt. Rewrite as e.g. "Solve for $a$: after expanding $-2(v-w)$, what is the denominator?"`;
 
 let client: OpenAI | null = null;
 function getClient(): OpenAI {
@@ -68,8 +82,8 @@ export async function generateLessonCard(
       .join('\n');
     const resp = await getClient().chat.completions.create({
       model: CARD_MODEL,
-      max_completion_tokens: 1200,
-      reasoning_effort: 'low',
+      max_completion_tokens: 2500,
+      reasoning_effort: 'high',
       messages: [
         { role: 'system', content: SYSTEM + lang },
         { role: 'user', content: user },
@@ -90,7 +104,12 @@ export async function generateLessonCard(
     const p = JSON.parse(out) as { front?: string; back?: string };
     const front = (p.front ?? '').trim();
     const back = (p.back ?? '').trim();
-    if (!front && !back) return null;
+    // Reject a bad card so it re-queues for Rebuild rather than persisting: front empty, front is a
+    // bare expression (the answer copied onto the front, with no prose), or front equals back.
+    const norm = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase();
+    const frontProse = /[a-zA-ZäöüÄÖÜ]{2,}/.test(front.replace(/\$[^$]*\$/g, ' '));
+    const bareExpr = !!front && !front.includes('?') && !frontProse;
+    if ((!front && !back) || bareExpr || (!!front && norm(front) === norm(back))) return null;
     return { front, back };
   } catch (err) {
     console.warn('[nuclear-learning] lesson card generation failed:', err);
