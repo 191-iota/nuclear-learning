@@ -146,8 +146,9 @@ async function runFeedback() {
       lastFeedback.value = feedback.hasSolution()
         ? 'Looks good so far…'
         : 'Working out the solution…';
-    } else if (played) {
-      // Only refresh the shown correction when it actually spoke; a deduped repeat leaves it be.
+    } else {
+      // Always reflect the CURRENT scan's verdict on screen (audio still de-dupes via `played`), so a
+      // resolved or changed error never lingers as stale text carried over from an earlier scan.
       lastFeedback.value = feedback.describe(text, activeMode.value);
     }
     status.value = '';

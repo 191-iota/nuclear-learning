@@ -194,10 +194,16 @@ export function useFeedback() {
 
   // The most recent flagged error still in session memory, the mistake the
   // learner just had to fix. Skips OK / CORRECT lines.
+  // An illegibility prompt ("Can't read step N, rewrite it.") is not a learnable mistake, so it must
+  // never seed a lesson; lastError skips it and finds the last REAL flagged error instead.
+  function isReadNudge(text: string): boolean {
+    return /can.?t read|rewrite it|illegible|unleserlich|nicht lesen/i.test(text);
+  }
+
   function lastError(): string {
     for (let i = history.length - 1; i >= 0; i--) {
       const h = history[i];
-      if (!isQuiet(h) && !isCorrect(h)) return h;
+      if (!isQuiet(h) && !isCorrect(h) && !isReadNudge(h)) return h;
     }
     return '';
   }
@@ -314,7 +320,9 @@ export function useFeedback() {
   function buildCachedContext(hasCache: boolean): string {
     const lines: string[] = [];
     if (history.length > 0) {
-      lines.push('Earlier feedback you gave on this same page (oldest first):');
+      lines.push(
+        'Feedback you gave EARLIER on this same page (oldest first). The learner may have since fixed some of these, so check each one against the CURRENT work: if a step you flagged now follows correctly, it is FIXED — do NOT report it again and do NOT let it keep you from OK/CORRECT. Only re-report an error that is STILL wrong in what is written now.',
+      );
       lines.push(history.map((h, i) => `${i + 1}. ${h}`).join('\n'));
       lines.push('');
     }

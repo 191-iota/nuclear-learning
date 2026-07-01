@@ -71,6 +71,16 @@ function load(): Persisted {
 
 export const lessonStore = reactive(load());
 
+// One-time cleanup on load: purge illegibility-nudge cards that should never have been captured
+// (e.g. "Can't read step 1, rewrite it."), and persist so they do not come back.
+{
+  const before = lessonStore.lessons.length;
+  lessonStore.lessons = lessonStore.lessons.filter(
+    (l) => !isReadNudge(l.mistake) && !isReadNudge(l.front ?? ''),
+  );
+  if (lessonStore.lessons.length !== before) persist();
+}
+
 function persist(): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(lessonStore));
@@ -81,6 +91,12 @@ function persist(): void {
 
 function norm(s: string): string {
   return s.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+// Illegibility nudges ("Can't read step N, rewrite it.") are not learnable mistakes and must not
+// live in the deck; drop any that slipped in before capture filtered them out.
+function isReadNudge(s: string): boolean {
+  return /can.?t read|rewrite it|illegible|unleserlich|nicht lesen/i.test(s);
 }
 
 let counter = 0;
