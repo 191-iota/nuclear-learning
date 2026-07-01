@@ -141,10 +141,7 @@ async function runFeedback() {
     feedback.recordVerdict(text);
     const played = feedback.deliver(text, activeMode.value);
     if (feedback.isQuiet(text)) {
-      lastFeedback.value =
-        activeMode.value.cornerGated && !feedback.lastCornerSeen()
-          ? 'No corner mark seen yet. Draw one to get this checked.'
-          : 'Looks good so far…';
+      lastFeedback.value = 'Looks good so far…';
     } else if (played) {
       // Only refresh the shown correction when it actually spoke; a deduped repeat leaves it be.
       lastFeedback.value = feedback.describe(text, activeMode.value);

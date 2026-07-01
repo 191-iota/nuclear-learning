@@ -21,13 +21,10 @@ type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 const SOLUTION_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['problem', 'solution', 'cornerMark', 'verdict', 'correction'],
+  required: ['problem', 'solution', 'verdict', 'correction'],
   properties: {
     problem: { type: 'string' },
     solution: { type: 'string' },
-    // Whether the learner has drawn a corner mark on the page. The app forces the verdict
-    // to OK whenever this is false in a corner-gated mode, so nothing is surfaced unasked.
-    cornerMark: { type: 'boolean' },
     verdict: { type: 'string' },
     correction: {
       type: 'object',
@@ -50,7 +47,7 @@ const SOLUTION_SCHEMA = {
 const SKILL_SOLUTION_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['problem', 'solution', 'cornerMark', 'verdict', 'correction', 'difficulty', 'skills'],
+  required: ['problem', 'solution', 'verdict', 'correction', 'difficulty', 'skills'],
   properties: {
     ...SOLUTION_SCHEMA.properties,
     difficulty: { enum: [1, 2, 3, 4, 5] },
@@ -128,9 +125,6 @@ export function useFeedback() {
   // and it is never re-solved until resetSession (Clear).
   let cachedSolution = '';
   let cachedProblem = '';
-  // Whether the last scan's verifier saw a corner mark, so the UI can tell "no corner yet" (nothing
-  // asked) apart from "corner seen, still not done" instead of one vague message for both.
-  let sawCornerLast = false;
   // One lesson per problem: set once a corrected mistake is logged this session.
   let lessonCaptured = false;
   // Latest learner-facing correction emitted on this page (what was wrong + the
@@ -335,15 +329,14 @@ export function useFeedback() {
         'The correct solution to the current problem is:',
         cachedSolution,
         '',
-        'Set `cornerMark` true ONLY if the learner has clearly drawn a corner mark on this page: a deliberate hand-drawn right-angle hook or L-shaped bracket OF ANY SIZE (a small L, a corner bracket, or a large bracket drawn beside, beneath, or around an answer) added as an annotation to flag a line or answer for checking, separate from the mathematics, not a right angle that belongs to the work (a geometry figure, a bracket or fraction-bar corner, an L variable). If you are unsure, set it false.',
-        'If `cornerMark` is false, your verdict is OK and nothing else, whatever the work shows. Never correct, acknowledge, or comment without a corner mark. When `cornerMark` is true, judge RESULT-FIRST against the known solution: if a result the learner has settled on diverges, name the first diverging step, reading what the learner wrote rather than guessing a formula. Respond CORRECT ONLY when every sub-part label on the page (a, b, c, ...) has an answer, each answered sub-part carries its OWN double-underlined result tied to it, and every error flagged earlier has been fixed; otherwise, with no diverging settled result, respond OK. Give no advice or encouragement of any kind. Do not re-derive; leave "solution" empty.',
+        'Judge the work RESULT-FIRST against the known solution: if a result the learner has settled on diverges, name the first diverging step, reading what the learner actually wrote rather than guessing a formula. Respond CORRECT ONLY when every sub-part label on the page (a, b, c, ...) has an answer, each answered sub-part carries its own clearly-marked result, and every error flagged earlier has been fixed; otherwise, with no diverging settled result, respond OK. Give no advice or encouragement of any kind. Do not re-derive; leave "solution" empty.',
         'While a line, a calculation, or a redo is still being written, respond OK rather than flagging it; only judge a result the learner has settled on. A line the learner marked "falsch" or struck through and redirected with an arrow to a redo is finished business: NEVER report that mistake again, follow the arrow, and stay OK while the redo is in progress, judging it only once it reaches a settled result. Report any one correction only once, then stay OK while the learner works on the fix.',
         'CORRECTION (stored for the learner\'s later review, never spoken): if your verdict is CORRECT and the earlier feedback above had flagged a mistake the learner has since fixed, fill `correction.wrong` with the specific error they made and `correction.right` with the corrected version, each ONE short line, writing every mathematical expression in LaTeX between single $ delimiters (for example $\\overline{a\\cdot b}=\\bar a+\\bar b$). This field is for review only, so naming the right answer here is fine and does not change your verdict. If there was no earlier mistake, leave both empty.',
       );
     } else {
       lines.push(
         'No solution has been worked out for the current problem yet. Identify the problem the learner is working on, solve it completely yourself, and return the full worked solution in "solution" with a short label in "problem" (work it out and keep it ready even on a scan where you stay silent). If the problem statement is still incomplete or you cannot determine it, leave "solution" empty.',
-        'Set `cornerMark` true only if a corner mark is clearly present (a deliberate hand-drawn right-angle hook or L-shaped bracket of any size beside, beneath, or around a line or answer, separate from the mathematics; if unsure, false). If `cornerMark` is false, your verdict is OK. When it is true, grade against the solution you just derived: name the first diverging step only for a result the learner has settled on; respond CORRECT ONLY when every sub-part is answered with its own double-underlined result and every earlier error is fixed; otherwise OK. Give no advice.',
+        'Then grade the current work against the solution you just derived: name the first diverging step only for a result the learner has settled on; respond CORRECT ONLY when every sub-part is answered with its own clearly-marked result and every earlier error is fixed; otherwise OK. Give no advice.',
         'While a line or a redo is still being written, respond OK. A line the learner marked "falsch" or struck through and redirected with an arrow to a redo is finished: do not report that mistake again, and stay OK until the redo reaches a settled result.',
       );
     }
@@ -372,7 +365,6 @@ export function useFeedback() {
   ): Promise<{
     problem: string;
     solution: string;
-    cornerMark: boolean;
     verdict: string;
     correction: { wrong: string; right: string };
     difficulty?: number;
@@ -422,7 +414,7 @@ export function useFeedback() {
       parsed = JSON.parse(out);
     } catch {
       // A non-JSON reply carries no corner-mark signal, so a gated mode treats it as OK.
-      return { problem: '', solution: '', cornerMark: false, verdict: out, correction: { wrong: '', right: '' } };
+      return { problem: '', solution: '', verdict: out, correction: { wrong: '', right: '' } };
     }
     const correction = {
       wrong: (parsed?.correction?.wrong ?? '').trim(),
@@ -449,7 +441,6 @@ export function useFeedback() {
     return {
       problem: (parsed.problem ?? '').trim(),
       solution: (parsed.solution ?? '').trim(),
-      cornerMark: parsed.cornerMark === true,
       verdict: (parsed.verdict ?? '').trim(),
       correction,
       difficulty,
@@ -457,19 +448,48 @@ export function useFeedback() {
     };
   }
 
-  // Corner-gated modes only surface a verdict when the model reports a corner mark on the
-  // page; otherwise the app forces OK, so nothing interrupts work you did not flag. This
-  // enforces the gate in code, so a stray correction or a premature CORRECT can never leak
-  // through when there is no mark, even if the model tries to comment anyway.
-  function gateVerdict(reply: { verdict: string; cornerMark?: boolean }, mode: Mode): string {
-    return mode.cornerGated && reply.cornerMark !== true ? 'OK' : reply.verdict;
+  // Sonnet watches the page and says whether the full question is written and ready to be solved, so
+  // the Opus solve only runs once there is a real, complete problem to work out and cache.
+  async function checkReady(data: string, mediaType: ImageMediaType, mode: Mode): Promise<boolean> {
+    const model = settings.api.verifyModel;
+    try {
+      const resp = await getClient().messages.create(
+        {
+          model,
+          max_tokens: 16,
+          system:
+            'You look at a photo of handwritten math work and decide ONLY whether the full problem statement the learner is working on is written out completely enough to be solved (the whole question, not just a heading, a label, or a half-written line). Reply with EXACTLY ONE word: "ready" if it is, or "wait" if the question is still incomplete or you cannot tell.',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
+                { type: 'text', text: 'One word: ready or wait.' },
+              ],
+            },
+          ],
+        } as any,
+        { timeout: 12000 },
+      );
+      logUsage(resp, mode, model, 'classify');
+      const out = (resp.content as any[])
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text as string)
+        .join(' ')
+        .toLowerCase();
+      if (out.includes('wait')) return false;
+      return out.includes('ready');
+    } catch (err) {
+      console.warn('[nuclear-learning] ready check failed, waiting:', err);
+      return false;
+    }
   }
 
-  // The grading path, fixed models, no classifier. Opus solves the problem once at MEDIUM effort
-  // and caches the worked checklist; Sonnet verifies every later scan against that cache and is what
-  // reads the corner mark and the double-underlined results (no mark -> OK, silent); Opus confirms a
-  // checked answer at LOW effort before we acknowledge. The solve leaves the cache empty and retries
-  // next scan until the question is fully written, then latches. Clear moves on to a new problem.
+  // The grading path, no corner mark. While no solution is cached, Sonnet says each scan whether the
+  // question is fully written and ready; once it is, Opus solves it at MEDIUM effort and caches the
+  // worked checklist. From then on Sonnet verifies every scan against that cache and corrects
+  // continuously (it stays OK while a line is mid-working and only flags a settled result), and Opus
+  // confirms a finished answer at LOW effort before we acknowledge. Clear moves on to a new problem.
   async function getFeedbackCached(
     data: string,
     mediaType: ImageMediaType,
@@ -477,9 +497,9 @@ export function useFeedback() {
   ): Promise<string> {
     const wantSkills = settings.api.trackSkills;
 
-    // SOLVE once on Opus (medium), caching the checklist. It also grades the current page, but the
-    // corner gate keeps that silent unless a mark is there.
+    // No solution yet: only once Sonnet says the question is ready does Opus solve and cache it.
     if (cachedSolution === '') {
+      if (!(await checkReady(data, mediaType, mode))) return 'OK';
       const r = await callModel(
         settings.api.solveModel,
         'medium',
@@ -494,14 +514,12 @@ export function useFeedback() {
       if (r.problem) cachedProblem = r.problem;
       lastSteps = solutionSteps();
       recordMembership(r);
-      sawCornerLast = r.cornerMark;
-      const v = gateVerdict(r, mode);
-      if (isCorrect(v)) captureSkills(r); // first-try-correct, only with a corner mark
-      return v;
+      if (isCorrect(r.verdict)) captureSkills(r);
+      return r.verdict;
     }
 
-    // VERIFY every later scan on Sonnet against the cache. Sonnet reads the corner mark and the
-    // double-underlined results; without a mark it returns OK and the app stays silent.
+    // VERIFY every scan on Sonnet against the cache, correcting continuously. It stays OK while a
+    // line or a redo is still being written, and flags the first diverging settled result.
     const r = await callModel(
       settings.api.verifyModel,
       settings.api.verifyEffort,
@@ -511,11 +529,9 @@ export function useFeedback() {
       mode,
       buildCachedContext(true),
     );
-    sawCornerLast = r.cornerMark;
-    const rv = gateVerdict(r, mode);
-    if (!isCorrect(rv)) return rv;
+    if (!isCorrect(r.verdict)) return r.verdict;
 
-    // Sonnet judged the marked answer finished and right: Opus confirms at LOW effort before we say so.
+    // Sonnet judged the answer finished and right: Opus confirms at LOW effort before we say so.
     const c = await callModel(
       settings.api.confirmModel,
       'low',
@@ -526,9 +542,8 @@ export function useFeedback() {
       buildCachedContext(true),
       wantSkills,
     );
-    const cv = gateVerdict(c, mode);
-    if (isCorrect(cv)) captureSkills(c);
-    return cv;
+    if (isCorrect(c.verdict)) captureSkills(c);
+    return c.verdict;
   }
 
   /** Commit a verdict to the page's session memory (kept distinct). */
@@ -666,7 +681,6 @@ export function useFeedback() {
     spokenKeys.clear();
     cachedSolution = '';
     cachedProblem = '';
-    sawCornerLast = false;
     lessonCaptured = false;
     lastCorrection = null;
     skillMembership = null;
@@ -679,12 +693,6 @@ export function useFeedback() {
     }
   }
 
-  // Did the last scan's gate see a corner mark? Lets the UI separate "no corner yet" from a real
-  // "looks good" so a missed mark is never mistaken for silence.
-  function lastCornerSeen(): boolean {
-    return sawCornerLast;
-  }
-
   return {
     getFeedback,
     recordVerdict,
@@ -695,6 +703,5 @@ export function useFeedback() {
     playChime,
     isCorrect,
     isQuiet,
-    lastCornerSeen,
   };
 }
