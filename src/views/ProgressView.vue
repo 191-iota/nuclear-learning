@@ -1,130 +1,91 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import {
-  domainRollup,
-  rankings,
-  recommendPractice,
-  skillSummary,
-  trajectory,
-  overallTrajectory,
-  ratingHistory,
-  resetSkills,
-  type DomainRollup,
-} from '@/stores/skills';
+import { rankings, skillSummary, ratingHistory, resetSkills } from '@/stores/skills';
 import { generateDrill, type DrillProblem } from '@/drill';
 import { rankView, rankDrillTarget, RANKS } from '@/rank';
 import MathText from '@/components/MathText.vue';
 
-// Sentinel keys for the over-time chart: the rating curve (the universal "how fast am
-// I getting better" signal, default) and the all-domains mastery aggregate.
-const RATING = '__rating__';
-const OVERALL = '__all__';
+// The tab answers exactly two questions: how am I progressing (rating, delta, curve,
+// distance to the next rank) and what should I drill (weakest skills, one button each).
+// Everything percentage-shaped was cut on purpose — the rating is the score, the skill
+// map stays an internal diagnostic feeding the weak-spot list and the drill targeting.
 
-// All reactive off the skill store: reading the selectors inside a computed registers
-// the dependency, so the dashboard recomputes live as problems resolve.
 const summary = computed(() => skillSummary());
 const rank = computed(() => rankView());
-const domains = computed(() => domainRollup());
-const touchedDomains = computed(() => domains.value.filter((d) => d.touched > 0));
-const ranks = computed(() => rankings());
-const rec = computed(() => recommendPractice());
 
-const selectedDomain = ref(RATING);
-const traj = computed(() =>
-  selectedDomain.value === OVERALL
-    ? overallTrajectory()
-    : selectedDomain.value && selectedDomain.value !== RATING
-      ? trajectory(selectedDomain.value)
-      : [],
-);
-
-// The plotted series: rating points (own y-domain, padded) or mastery 0-100.
-const series = computed<number[]>(() => {
-  if (selectedDomain.value === RATING) {
-    const h = ratingHistory();
-    return h.length >= 2 ? h.map((s) => s.r) : [];
-  }
-  return traj.value.map((p) => p.masteryPct);
-});
-// x positions, normalized 0..1. The rating log holds one point per ACTIVE day, so its
-// x is proportional to the calendar day — a three-week break renders as a flat gap,
-// keeping the curve's slope an honest per-time "how fast am I getting better".
-const xsNorm = computed<number[]>(() => {
-  if (selectedDomain.value === RATING) {
-    const h = ratingHistory();
-    if (h.length < 2) return [];
-    const a = h[0].day;
-    const b = h[h.length - 1].day;
-    return h.map((s) => (b === a ? 1 : (s.day - a) / (b - a)));
-  }
-  const n = traj.value.length;
-  return traj.value.map((_, i) => (n <= 1 ? 1 : i / (n - 1)));
-});
-const yDomain = computed<[number, number]>(() => {
-  if (selectedDomain.value !== RATING) return [0, 100];
-  const v = series.value;
-  if (!v.length) return [0, 100];
-  const lo = Math.min(...v);
-  const hi = Math.max(...v);
-  const pad = Math.max(40, (hi - lo) * 0.15);
-  return [lo - pad, hi + pad];
-});
-
+// The rating curve: one point per active day, x proportional to the calendar so a
+// break renders as a flat gap and the slope stays an honest per-time signal.
 const VW = 1000;
 const VH = 100;
-const trajPts = computed(() => {
-  const v = series.value;
-  const xs = xsNorm.value;
-  const [lo, hi] = yDomain.value;
-  return v.map((val, i) => ({
-    x: (xs[i] ?? 1) * VW,
-    y: VH - ((val - lo) / (hi - lo)) * VH,
+const curve = computed(() => ratingHistory());
+const curvePts = computed(() => {
+  const h = curve.value;
+  if (h.length < 2) return [];
+  const lo = Math.min(...h.map((s) => s.r));
+  const hi = Math.max(...h.map((s) => s.r));
+  const pad = Math.max(40, (hi - lo) * 0.15);
+  const a = h[0].day;
+  const b = h[h.length - 1].day;
+  return h.map((s) => ({
+    x: (b === a ? 1 : (s.day - a) / (b - a)) * VW,
+    y: VH - ((s.r - (lo - pad)) / (hi - lo + 2 * pad)) * VH,
   }));
 });
-const trajLine = computed(() =>
-  trajPts.value.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' '),
+const curveLine = computed(() =>
+  curvePts.value.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' '),
 );
-const trajArea = computed(() => {
-  const ps = trajPts.value;
+const curveArea = computed(() => {
+  const ps = curvePts.value;
   if (ps.length < 2) return '';
-  return `M${ps[0].x.toFixed(1)},${VH} ${trajLine.value.slice(1)} L${ps[ps.length - 1].x.toFixed(1)},${VH} Z`;
-});
-const chartCaption = computed(() => {
-  if (selectedDomain.value === RATING) {
-    const h = ratingHistory();
-    if (h.length < 2) return null;
-    return {
-      left: `${h.length} active days · from ${h[0].r}`,
-      right: `now ${h[h.length - 1].r}`,
-    };
-  }
-  const t = traj.value;
-  if (t.length < 2) return null;
-  return { left: `${t.length} days`, right: `now ${t[t.length - 1].masteryPct}%` };
+  return `M${ps[0].x.toFixed(1)},${VH} ${curveLine.value.slice(1)} L${ps[ps.length - 1].x.toFixed(1)},${VH} Z`;
 });
 
-function reset() {
-  if (confirm('Reset all tracked skill mastery? This cannot be undone.')) {
-    resetSkills();
-    selectedDomain.value = RATING;
-  }
+// Weak spots: the weakest tracked skills plus strong-but-rusty ones, deduped, capped.
+// No percentages — the reason chip says something concrete instead.
+interface WeakSpot {
+  id: string;
+  label: string;
+  masteryPct: number;
+  reason: string;
 }
+const weakSpots = computed<WeakSpot[]>(() => {
+  const r = rankings();
+  const rows: WeakSpot[] = [
+    ...r.drill.map((x) => ({
+      id: x.id,
+      label: x.label,
+      masteryPct: x.masteryPct,
+      reason: x.f >= 1 ? `missed ${x.f}×` : 'shaky',
+    })),
+    ...r.fading.map((x) => ({
+      id: x.id,
+      label: x.label,
+      masteryPct: x.masteryPct,
+      reason: `rusty · ${x.daysSince}d`,
+    })),
+  ];
+  const seen = new Set<string>();
+  const out: WeakSpot[] = [];
+  for (const row of rows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    out.push(row);
+    if (out.length >= 5) break;
+  }
+  return out;
+});
 
-// On-demand drill problem: one cheap text call turns the frontier-band target (or,
-// without one, the weakest-skill recommendation) into an actual problem to copy onto
-// paper. Beating problems at or above your level is what moves the rating.
 const drill = ref<DrillProblem | null>(null);
 const drillBusy = ref(false);
 const drillError = ref(false);
-async function makeDrill() {
-  const target = rankDrillTarget() ?? rec.value.drill;
-  if (!target || drillBusy.value) return;
+async function makeDrill(target?: { id: string; masteryPct: number }) {
+  const t = target ?? rankDrillTarget() ?? weakSpots.value[0];
+  if (!t || drillBusy.value) return;
   drillBusy.value = true;
   drillError.value = false;
   try {
-    // Keep the previous problem on screen until a new one actually arrives; a failed
-    // call (no key, network) must not silently swallow it.
-    const p = await generateDrill(target.id, target.masteryPct);
+    // Keep the previous problem on screen until a new one actually arrives.
+    const p = await generateDrill(t.id, t.masteryPct);
     if (p) drill.value = p;
     else drillError.value = true;
   } finally {
@@ -132,33 +93,11 @@ async function makeDrill() {
   }
 }
 
-// Placement marker across the four EQUAL axis segments. Bands span unequal level
-// ranges (Sek covers 1-2.5, the others one level each), so the mapping is piecewise —
-// the marker must sit over the same segment the caption names.
-const BAND_EDGES = [1, 2.5, 3.5, 4.5, 5];
-const markerPct = computed(() => {
-  const p = rank.value.place;
-  if (!p || !p.settled) return null;
-  let i = BAND_EDGES.length - 2;
-  for (let k = 0; k < BAND_EDGES.length - 1; k += 1) {
-    if (p.level <= BAND_EDGES[k + 1]) {
-      i = k;
-      break;
-    }
+function reset() {
+  if (confirm('Reset all tracked skill mastery and the rating? This cannot be undone.')) {
+    resetSkills();
+    drill.value = null;
   }
-  const frac = (p.level - BAND_EDGES[i]) / (BAND_EDGES[i + 1] - BAND_EDGES[i]);
-  return Math.min(99, Math.max(1, (i + frac) * 25));
-});
-const placeBand = computed(() => {
-  const p = rank.value.place;
-  if (!p) return '';
-  const l = p.level;
-  return l < 2.5 ? 'Sek' : l < 3.5 ? 'BM' : l < 4.5 ? 'Passerelle' : 'Uni';
-});
-
-function domTip(d: DomainRollup): string {
-  const m = d.masteryPct === null ? 'not assessed' : `${d.masteryPct}% mastery`;
-  return `${d.label}\n${m} · ${d.touched}/${d.total} skills`;
 }
 </script>
 
@@ -166,11 +105,6 @@ function domTip(d: DomainRollup): string {
   <section class="scroll">
     <div class="page-head">
       <h2>Progress</h2>
-      <span class="muted mono" style="font-size: 0.72rem">
-        {{ summary.coveredKCs }}/{{ summary.totalKCs }} skills · {{ summary.domainsTouched }}/{{
-          summary.totalDomains
-        }} domains
-      </span>
       <span class="spacer" />
       <button v-if="summary.coveredKCs > 0" class="ghost danger" @click="reset">Reset</button>
     </div>
@@ -212,36 +146,27 @@ function domTip(d: DomainRollup): string {
           </div>
         </div>
 
-        <div class="axis" :class="{ unplaced: markerPct === null }">
-          <div class="axis-tracks">
-            <div v-for="b in rank.bands" :key="b.key" class="axis-seg" :title="`${b.label} — ${b.secured}/${b.total} secured`">
-              <div class="axis-track">
-                <span class="fill" :style="{ width: b.pct + '%' }" />
-              </div>
-              <div class="axis-label mono">{{ b.short }} <span class="axis-pct">{{ b.pct }}%</span></div>
-            </div>
+        <template v-if="curvePts.length >= 2">
+          <svg class="trend" :viewBox="`0 0 ${VW} ${VH}`" preserveAspectRatio="none" aria-hidden="true">
+            <line class="t-grid" x1="0" :y1="VH / 2" :x2="VW" :y2="VH / 2" />
+            <path :d="curveArea" class="t-area" />
+            <path :d="curveLine" class="t-line" />
+          </svg>
+          <div class="t-axis mono">
+            <span>from {{ curve[0].r }}</span>
+            <span class="spacer" />
+            <span>now {{ curve[curve.length - 1].r }}</span>
           </div>
-          <div v-if="markerPct !== null" class="axis-marker" :style="{ left: markerPct + '%' }">
-            <span class="axis-pin" />
-            <span class="axis-you mono">you</span>
-          </div>
-        </div>
-        <div class="axis-caption mono muted">
-          <template v-if="rank.place && rank.place.settled">
-            operating around {{ placeBand }} level · skill map fills as you show each skill
-          </template>
-          <template v-else-if="rank.place">
-            placing… {{ rank.place.n }}/5 problems
-          </template>
-          <span class="spacer" />
-          <span>map only — the rating is the score</span>
-        </div>
+        </template>
+        <p v-else class="muted small" style="margin: 0.8rem 0 0.2rem">
+          Your rating curve starts drawing after the second active day.
+        </p>
 
         <div v-if="rank.next" class="gate-row">
-          <span class="gate-line muted">to {{ rank.next.title }} ({{ rank.next.minRating }})</span>
+          <span class="gate-line muted">to {{ rank.next.title }}</span>
           <span class="gate-track"><span class="fill" :style="{ width: rank.nextProgress + '%' }" /></span>
-          <span class="gate-line">{{ rank.nextStep }}</span>
-          <button class="ghost" :disabled="drillBusy" @click="makeDrill">
+          <span class="gate-line">{{ rank.next.minRating - (rank.rating?.value ?? 0) }} rating</span>
+          <button class="ghost" :disabled="drillBusy" @click="makeDrill()">
             {{ drillBusy ? 'Writing…' : drill ? 'Another one' : 'Drill one' }}
           </button>
           <span v-if="drillError" class="muted small">couldn't write one — check the key / network</span>
@@ -255,173 +180,29 @@ function domTip(d: DomainRollup): string {
         </div>
       </div>
 
-      <div v-if="rec.drill || rec.review" class="card rec">
-        <div class="rec-head mono">Practice next</div>
-        <div v-if="rec.drill" class="rec-line">
-          <span class="rec-tag">Work on</span>
-          <strong>{{ rec.drill.label }}</strong>
-          <span class="muted"> — your weakest tracked skill, {{ rec.drill.masteryPct }}% mastery</span>
+      <div v-if="weakSpots.length" class="card">
+        <div class="weak-head mono">Weak spots</div>
+        <div class="weak-rows">
+          <div v-for="w in weakSpots" :key="w.id" class="weak-row">
+            <span class="weak-label">{{ w.label }}</span>
+            <span class="weak-reason mono muted">{{ w.reason }}</span>
+            <button class="ghost small-btn" :disabled="drillBusy" @click="makeDrill(w)">Drill</button>
+          </div>
         </div>
-        <div v-if="rec.review" class="rec-line">
-          <span class="rec-tag review">Refresh</span>
-          <strong>{{ rec.review.label }}</strong>
-          <span class="muted"> — strong but fading, last worked {{ rec.review.daysSince }}d ago</span>
-        </div>
-        <div class="muted small rec-aim">
-          Pick problems you would get right about 4 times in 5 — hard enough to stretch, not to stall.
+        <div class="muted small" style="margin-top: 0.55rem">
+          Fixing a weak spot is also the cheapest rating you'll ever gain.
         </div>
       </div>
-
-      <div class="card">
-        <div class="row" style="margin-bottom: 0.2rem">
-          <strong style="font-size: 0.85rem">Mastery by domain</strong>
-          <span class="spacer" />
-          <span class="muted mono" style="font-size: 0.68rem">tap a bar to focus</span>
-        </div>
-        <div class="chart">
-          <div
-            v-for="d in domains"
-            :key="d.domain"
-            class="bar-col"
-            :class="{ dim: d.masteryPct === null, sel: d.domain === selectedDomain }"
-            :title="domTip(d)"
-            @click="d.touched > 0 && (selectedDomain = d.domain)"
-          >
-            <div class="bar-track">
-              <div class="seg-fill" :style="{ flexGrow: 100 - (d.masteryPct ?? 0) }" />
-              <div class="seg-out" :style="{ flexGrow: d.masteryPct ?? 0 }" />
-            </div>
-            <div class="bar-label">{{ d.domain }}</div>
-          </div>
-        </div>
-        <div class="legend">
-          <span><span class="dot" style="background: var(--chart-out)" />mastery (0-100)</span>
-          <span class="muted">dim = not assessed yet</span>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="row" style="margin-bottom: 0.4rem">
-          <strong style="font-size: 0.85rem">Over time</strong>
-          <span class="spacer" />
-        </div>
-        <div class="tabs domsel">
-          <button
-            class="tab"
-            :class="{ active: selectedDomain === RATING }"
-            @click="selectedDomain = RATING"
-          >
-            rating
-          </button>
-          <button
-            class="tab"
-            :class="{ active: selectedDomain === OVERALL }"
-            @click="selectedDomain = OVERALL"
-          >
-            mastery
-          </button>
-          <button
-            v-for="d in touchedDomains"
-            :key="d.domain"
-            class="tab"
-            :class="{ active: d.domain === selectedDomain }"
-            @click="selectedDomain = d.domain"
-          >
-            {{ d.domain }}
-          </button>
-        </div>
-        <template v-if="series.length >= 2">
-          <svg class="trend" :viewBox="`0 0 ${VW} ${VH}`" preserveAspectRatio="none" aria-hidden="true">
-            <line class="t-grid" x1="0" :y1="VH / 2" :x2="VW" :y2="VH / 2" />
-            <path :d="trajArea" class="t-area" />
-            <path :d="trajLine" class="t-line" />
-          </svg>
-          <div v-if="chartCaption" class="t-axis mono">
-            <span>{{ chartCaption.left }}</span>
-            <span class="spacer" />
-            <span>{{ chartCaption.right }}</span>
-          </div>
-        </template>
-        <p v-else class="muted" style="font-size: 0.72rem; margin-top: 0.6rem">
-          The rating curve builds here from your second active day — its slope is how fast you are
-          getting better. Mastery views drift down when a domain goes rusty, never in sudden drops.
-        </p>
-      </div>
-
-      <div class="rank-grid">
-        <div class="card rank">
-          <div class="rank-head mono">Drill next</div>
-          <div v-if="ranks.drill.length" class="rows">
-            <div v-for="r in ranks.drill" :key="r.id" class="skillrow" :class="{ prov: r.provisional }">
-              <span class="lbl" :title="r.id">{{ r.label }}</span>
-              <span class="track"><span class="fill" :style="{ width: r.masteryPct + '%', opacity: 0.4 + 0.6 * r.R }" /></span>
-              <span class="meta">{{ r.masteryPct }}%<template v-if="r.f >= 1"> · {{ r.f }}× missed</template></span>
-            </div>
-          </div>
-          <div v-else class="muted small">Nothing weak enough to flag yet.</div>
-        </div>
-
-        <div class="card rank">
-          <div class="rank-head mono">Strongest</div>
-          <div v-if="ranks.strongest.length" class="rows">
-            <div v-for="r in ranks.strongest" :key="r.id" class="skillrow">
-              <span class="lbl" :title="r.id">{{ r.label }}</span>
-              <span class="track"><span class="fill good" :style="{ width: r.masteryPct + '%', opacity: 0.4 + 0.6 * r.R }" /></span>
-              <span class="meta">{{ r.masteryPct }}%</span>
-            </div>
-          </div>
-          <div v-else class="muted small">Solve a few more to confirm a strength.</div>
-        </div>
-
-        <div class="card rank">
-          <div class="rank-head mono">Fading review</div>
-          <div v-if="ranks.fading.length" class="rows">
-            <div v-for="r in ranks.fading" :key="r.id" class="skillrow">
-              <span class="lbl" :title="r.id">{{ r.label }}</span>
-              <span class="track"><span class="fill" :style="{ width: r.masteryPct + '%', opacity: 0.4 + 0.6 * r.R }" /></span>
-              <span class="meta">{{ r.daysSince }}d ago</span>
-            </div>
-          </div>
-          <div v-else class="muted small">Nothing going stale.</div>
-        </div>
-      </div>
-
-      <p class="muted" style="font-size: 0.72rem; margin-top: 0.8rem">
-        Each solved problem is tagged once against a fixed map of 125 math skills and folded into a
-        local rating, so this updates live and costs no extra request. A skill rises with clean work,
-        dips on a miss, and fades when left untouched. Mastery is a 0-100 estimate of how firmly a
-        skill is held, not a percentage of problems correct.
-      </p>
     </template>
 
     <div v-else class="empty">
-      No solved problems assessed yet. Work problems on the Pad in a math mode. Once one resolves, the
-      skills it exercised show up here, and a picture of your strengths and weak spots builds over time.
+      No solved problems yet. Work problems on the Pad — after a handful you get a rating, and your
+      curve and weak spots build from there.
     </div>
   </section>
 </template>
 
 <style scoped>
-.bar-col.dim .bar-track {
-  opacity: 0.4;
-}
-.bar-col.sel .bar-label {
-  color: var(--ink);
-  font-weight: 600;
-}
-.bar-col {
-  cursor: pointer;
-}
-
-.domsel {
-  flex-wrap: wrap;
-  gap: 0.3rem;
-}
-.domsel .tab {
-  padding: 0.25rem 0.55rem;
-  font-size: 0.72rem;
-}
-
 .rankcard {
   border-left: 3px solid var(--gold);
   margin-bottom: 0.7rem;
@@ -509,230 +290,11 @@ function domTip(d: DomainRollup): string {
   background: var(--gold);
 }
 
-.gate-track {
-  flex: 0 0 7rem;
-  height: 0.4rem;
-  background: var(--panel-2);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.gate-track .fill,
-.axis-track .fill {
-  display: block;
-  height: 100%;
-  background: var(--gold);
-}
-
-/* The academic axis: four stage segments, one continuous placement marker above. */
-.axis {
-  position: relative;
-  margin-top: 1.6rem;
-}
-
-.axis.unplaced {
-  margin-top: 1rem;
-}
-
-.axis-tracks {
-  display: flex;
-  gap: 3px;
-}
-
-.axis-seg {
-  flex: 1;
-}
-
-.axis-track {
-  height: 0.7rem;
-  background: var(--panel-2);
-  overflow: hidden;
-}
-
-.axis-seg:first-child .axis-track {
-  border-radius: 4px 0 0 4px;
-}
-
-.axis-seg:last-child .axis-track {
-  border-radius: 0 4px 4px 0;
-}
-
-.axis-label {
-  margin-top: 0.3rem;
-  font-size: 0.66rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  text-align: center;
-}
-
-.axis-pct {
-  color: var(--ink);
-}
-
-.axis-marker {
-  position: absolute;
-  top: -1.15rem;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  pointer-events: none;
-}
-
-.axis-you {
-  font-size: 0.6rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink);
-}
-
-.axis-pin {
-  width: 0;
-  height: 0;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
-  border-top: 7px solid var(--ink);
-  margin-top: 0.1rem;
-}
-
-.axis-caption {
-  display: flex;
-  gap: 0.6rem;
-  font-size: 0.66rem;
-  margin-top: 0.55rem;
-}
-
-.gate-row {
-  display: flex;
-  align-items: center;
-  gap: 0.8rem;
-  margin-top: 0.9rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border);
-}
-
-.gate-line {
-  font-size: 0.82rem;
-}
-
-.rec {
-  border-left: 3px solid var(--gold);
-}
-.rec-head {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  margin-bottom: 0.5rem;
-}
-.rec-line {
-  font-size: 0.82rem;
-  margin: 0.25rem 0;
-}
-.rec-tag {
-  display: inline-block;
-  min-width: 4.2rem;
-  font-family: var(--mono);
-  font-size: 0.66rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--gold);
-  margin-right: 0.35rem;
-}
-.rec-tag.review {
-  color: var(--muted);
-}
-.rec-aim {
-  margin-top: 0.45rem;
-}
-
-.drill-problem {
-  margin-top: 0.6rem;
-  padding: 0.6rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel-2);
-}
-
-.drill-task {
-  font-size: 0.72rem;
-  color: var(--muted);
-  margin-bottom: 0.25rem;
-}
-
-.drill-math {
-  font-size: 1rem;
-}
-
-.rank-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
-  gap: 0.7rem;
-  margin-top: 1rem;
-}
-
-.rank-head {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  margin-bottom: 0.6rem;
-}
-
-.rows {
-  display: flex;
-  flex-direction: column;
-}
-
-.skillrow {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0.32rem 0;
-  font-family: var(--mono);
-  font-size: 0.72rem;
-}
-.skillrow.prov {
-  opacity: 0.6;
-}
-.skillrow .lbl {
-  flex: 0 0 8.5rem;
-  color: var(--ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.skillrow .track {
-  flex: 1;
-  height: 0.5rem;
-  background: var(--panel-2);
-  border-radius: 3px;
-  overflow: hidden;
-}
-.skillrow .fill {
-  display: block;
-  height: 100%;
-  background: var(--gold);
-}
-.skillrow .fill.good {
-  background: var(--good);
-}
-.skillrow .meta {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.small {
-  font-size: 0.74rem;
-}
-
 .trend {
   width: 100%;
   height: 150px;
   display: block;
-  margin-top: 0.5rem;
+  margin-top: 1rem;
 }
 
 .t-grid {
@@ -759,5 +321,98 @@ function domTip(d: DomainRollup): string {
   font-size: 0.66rem;
   color: var(--muted);
   margin-top: 0.35rem;
+}
+
+.gate-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 0.9rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.gate-line {
+  font-size: 0.82rem;
+}
+
+.gate-track {
+  flex: 0 0 7rem;
+  height: 0.4rem;
+  background: var(--panel-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.gate-track .fill {
+  display: block;
+  height: 100%;
+  background: var(--gold);
+}
+
+.drill-problem {
+  margin-top: 0.6rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.drill-task {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+.drill-math {
+  font-size: 1rem;
+}
+
+.weak-head {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 0.55rem;
+}
+
+.weak-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.weak-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.35rem 0;
+  font-size: 0.85rem;
+}
+
+.weak-row + .weak-row {
+  border-top: 1px solid var(--border);
+}
+
+.weak-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.weak-reason {
+  font-size: 0.68rem;
+  flex: none;
+}
+
+.small-btn {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.72rem;
+}
+
+.small {
+  font-size: 0.74rem;
 }
 </style>
