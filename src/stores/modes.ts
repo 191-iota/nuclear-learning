@@ -7,11 +7,12 @@ import defaultModes from '@config/modes.json';
  * presets are persisted to localStorage. The Presets view mutates this directly;
  * MainView reads it reactively so prompt / debounce / effort changes apply live.
  */
-// Bumped when the shipped modes change in a way a stale saved copy must not shadow (v7:
-// math-only — the chemistry/German/freeform subjects left with their flags). A bump drops
-// the old localStorage and re-seeds from config/modes.json on next load, so new behaviour
-// actually reaches an existing browser.
-const KEY = 'nl.modes.v7';
+// Bumped when the shipped modes change in a way a stale saved copy must not shadow (v8:
+// Zwischenresultate — an unmarked correct-but-unsimplified line is OK, the finish nudge is
+// reserved for marked results and never names the missing step). A bump drops the old
+// localStorage and re-seeds from config/modes.json on next load, so new behaviour actually
+// reaches an existing browser.
+const KEY = 'nl.modes.v8';
 
 function seed(): Mode[] {
   return structuredClone(defaultModes) as unknown as Mode[];
