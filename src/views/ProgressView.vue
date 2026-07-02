@@ -11,7 +11,7 @@ import {
   type DomainRollup,
 } from '@/stores/skills';
 import { generateDrill, type DrillProblem } from '@/drill';
-import { rankView } from '@/rank';
+import { rankView, rankDrillTarget } from '@/rank';
 import MathText from '@/components/MathText.vue';
 
 // Sentinel domain key for the aggregated "all touched domains" trajectory.
@@ -60,21 +60,51 @@ function reset() {
   }
 }
 
-// On-demand drill problem for the recommended skill: one cheap text call turns the
-// "work on X" recommendation into an actual problem to copy onto paper.
+// On-demand drill problem: one cheap text call turns the rank bottleneck (or, without
+// one, the weakest-skill recommendation) into an actual problem to copy onto paper.
+// Probing an untouched skill in the gate band both places you faster and fills the gate.
 const drill = ref<DrillProblem | null>(null);
 const drillBusy = ref(false);
+const drillError = ref(false);
 async function makeDrill() {
-  const target = rec.value.drill;
+  const target = rankDrillTarget() ?? rec.value.drill;
   if (!target || drillBusy.value) return;
   drillBusy.value = true;
-  drill.value = null;
+  drillError.value = false;
   try {
-    drill.value = await generateDrill(target.id, target.masteryPct);
+    // Keep the previous problem on screen until a new one actually arrives; a failed
+    // call (no key, network) must not silently swallow it.
+    const p = await generateDrill(target.id, target.masteryPct);
+    if (p) drill.value = p;
+    else drillError.value = true;
   } finally {
     drillBusy.value = false;
   }
 }
+
+// Placement marker across the four EQUAL axis segments. Bands span unequal level
+// ranges (Sek covers 1-2.5, the others one level each), so the mapping is piecewise —
+// the marker must sit over the same segment the caption names.
+const BAND_EDGES = [1, 2.5, 3.5, 4.5, 5];
+const markerPct = computed(() => {
+  const p = rank.value.place;
+  if (!p || !p.settled) return null;
+  let i = BAND_EDGES.length - 2;
+  for (let k = 0; k < BAND_EDGES.length - 1; k += 1) {
+    if (p.level <= BAND_EDGES[k + 1]) {
+      i = k;
+      break;
+    }
+  }
+  const frac = (p.level - BAND_EDGES[i]) / (BAND_EDGES[i + 1] - BAND_EDGES[i]);
+  return Math.min(99, Math.max(1, (i + frac) * 25));
+});
+const placeBand = computed(() => {
+  const p = rank.value.place;
+  if (!p) return '';
+  const l = p.level;
+  return l < 2.5 ? 'Sek' : l < 3.5 ? 'BM' : l < 4.5 ? 'Passerelle' : 'Uni';
+});
 
 function pct(n: number | null): string {
   return n === null ? '—' : `${n}%`;
@@ -102,31 +132,60 @@ function domTip(d: DomainRollup): string {
       <div class="card rankcard">
         <div class="rank-row">
           <div class="rank-badge mono">{{ rank.rank.n }}</div>
-          <div class="rank-title-wrap">
+          <div>
             <div class="rank-title">{{ rank.rank.title }}</div>
             <div class="rank-anchor muted">{{ rank.rank.anchor }}</div>
           </div>
           <span class="spacer" />
           <div v-if="rank.next" class="rank-next mono">
-            <div class="muted">next: {{ rank.next.title }}</div>
+            <div class="muted">next · {{ rank.next.title }}</div>
             <div class="rank-nexttrack">
               <span class="fill" :style="{ width: rank.nextProgress + '%' }" />
             </div>
-            <div v-if="rank.nextStep" class="muted small">{{ rank.nextStep }}</div>
           </div>
         </div>
-        <div class="stage-grid">
-          <div v-for="b in rank.bands" :key="b.key" class="stage">
-            <div class="stage-label mono">{{ b.label }}</div>
-            <div class="stage-track">
-              <span class="fill" :style="{ width: b.pct + '%' }" />
+
+        <div class="axis" :class="{ unplaced: markerPct === null }">
+          <div class="axis-tracks">
+            <div v-for="b in rank.bands" :key="b.key" class="axis-seg" :title="`${b.label} — ${b.pct}% held, ${b.secured}/${b.total} secured`">
+              <div class="axis-track">
+                <span class="fill" :style="{ width: b.pct + '%' }" />
+              </div>
+              <div class="axis-label mono">{{ b.short }}</div>
             </div>
-            <div class="stage-meta mono muted">{{ b.secured }}/{{ b.total }} secured</div>
+          </div>
+          <div v-if="markerPct !== null" class="axis-marker" :style="{ left: markerPct + '%' }">
+            <span class="axis-pin" />
+            <span class="axis-you mono">you</span>
           </div>
         </div>
-        <div class="muted small" style="margin-top: 0.5rem">
-          A skill counts as secured at 70% mastery on more than one problem. Secured skills decay
-          when left unpractised, so a rank is held, not owned.
+        <div class="axis-caption mono muted">
+          <template v-if="rank.place && rank.place.settled">
+            operating around {{ placeBand }} level · {{ rank.place.n }} problems
+          </template>
+          <template v-else-if="rank.place">
+            placing… {{ rank.place.n }}/5 problems
+          </template>
+          <span class="spacer" />
+          <span>held, not owned — secured skills decay</span>
+        </div>
+
+        <div v-if="rank.next" class="gate-row">
+          <span class="gate-line">
+            <span class="muted">to {{ rank.next.title }}:</span>
+            {{ rank.nextStep }}
+          </span>
+          <button class="ghost" :disabled="drillBusy" @click="makeDrill">
+            {{ drillBusy ? 'Writing…' : drill ? 'Another one' : 'Drill one' }}
+          </button>
+          <span v-if="drillError" class="muted small">couldn't write one — check the key / network</span>
+        </div>
+        <div v-if="drill" class="drill-problem">
+          <div class="drill-task mono">{{ drill.task }} <span class="muted">· {{ drill.skillLabel }}</span></div>
+          <MathText :text="drill.problem" class="drill-math" />
+          <div class="muted small" style="margin-top: 0.3rem">
+            Copy it onto the pad — grading picks it up like any problem.
+          </div>
         </div>
       </div>
 
@@ -144,21 +203,6 @@ function domTip(d: DomainRollup): string {
         </div>
         <div class="muted small rec-aim">
           Pick problems you would get right about 4 times in 5 — hard enough to stretch, not to stall.
-        </div>
-        <div v-if="rec.drill" class="drill-row">
-          <button class="ghost" :disabled="drillBusy" @click="makeDrill">
-            {{ drillBusy ? 'Writing a problem…' : drill ? 'Another one' : 'Drill me' }}
-          </button>
-          <span v-if="!drill && !drillBusy" class="muted small">
-            generates one problem for {{ rec.drill.label }}, pitched at your level
-          </span>
-        </div>
-        <div v-if="drill" class="drill-problem">
-          <div class="drill-task mono">{{ drill.task }}</div>
-          <MathText :text="drill.problem" class="drill-math" />
-          <div class="muted small" style="margin-top: 0.3rem">
-            Copy it onto the pad — grading picks it up like any problem.
-          </div>
         </div>
       </div>
 
@@ -336,6 +380,7 @@ function domTip(d: DomainRollup): string {
 .rankcard {
   border-left: 3px solid var(--gold);
   margin-bottom: 0.7rem;
+  padding-bottom: 0.9rem;
 }
 
 .rank-row {
@@ -345,66 +390,136 @@ function domTip(d: DomainRollup): string {
 }
 
 .rank-badge {
-  width: 2.6rem;
-  height: 2.6rem;
+  width: 2.8rem;
+  height: 2.8rem;
   display: flex;
   align-items: center;
   justify-content: center;
   border: 2px solid var(--gold);
   border-radius: 50%;
-  font-size: 1.2rem;
+  font-size: 1.25rem;
   color: var(--gold);
   flex: none;
 }
 
 .rank-title {
-  font-size: 1.15rem;
+  font-size: 1.3rem;
   font-weight: 650;
   letter-spacing: 0.01em;
+  line-height: 1.15;
 }
 
 .rank-anchor {
-  font-size: 0.74rem;
+  font-size: 0.76rem;
 }
 
 .rank-next {
   text-align: right;
   font-size: 0.68rem;
-  min-width: 11rem;
+  min-width: 9rem;
 }
 
-.rank-nexttrack,
-.stage-track {
-  height: 0.45rem;
+.rank-nexttrack {
+  height: 0.4rem;
   background: var(--panel-2);
   border-radius: 3px;
   overflow: hidden;
-  margin: 0.25rem 0;
+  margin-top: 0.3rem;
 }
 
 .rank-nexttrack .fill,
-.stage-track .fill {
+.axis-track .fill {
   display: block;
   height: 100%;
   background: var(--gold);
 }
 
-.stage-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
-  gap: 0.7rem;
-  margin-top: 0.8rem;
+/* The academic axis: four stage segments, one continuous placement marker above. */
+.axis {
+  position: relative;
+  margin-top: 1.6rem;
 }
 
-.stage-label {
+.axis.unplaced {
+  margin-top: 1rem;
+}
+
+.axis-tracks {
+  display: flex;
+  gap: 3px;
+}
+
+.axis-seg {
+  flex: 1;
+}
+
+.axis-track {
+  height: 0.7rem;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.axis-seg:first-child .axis-track {
+  border-radius: 4px 0 0 4px;
+}
+
+.axis-seg:last-child .axis-track {
+  border-radius: 0 4px 4px 0;
+}
+
+.axis-label {
+  margin-top: 0.3rem;
   font-size: 0.66rem;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   color: var(--muted);
+  text-align: center;
 }
 
-.stage-meta {
+.axis-marker {
+  position: absolute;
+  top: -1.15rem;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+}
+
+.axis-you {
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.axis-pin {
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 7px solid var(--ink);
+  margin-top: 0.1rem;
+}
+
+.axis-caption {
+  display: flex;
+  gap: 0.6rem;
   font-size: 0.66rem;
+  margin-top: 0.55rem;
+}
+
+.gate-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 0.9rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.gate-line {
+  font-size: 0.82rem;
 }
 
 .rec {
@@ -436,13 +551,6 @@ function domTip(d: DomainRollup): string {
 }
 .rec-aim {
   margin-top: 0.45rem;
-}
-
-.drill-row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  margin-top: 0.55rem;
 }
 
 .drill-problem {

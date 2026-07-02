@@ -22,7 +22,7 @@ const DRILL_SCHEMA = {
   },
 };
 
-const SYSTEM = `You write ONE practice problem for a Swiss BM/HF mathematics learner (Berufsmatura level, preparing for Passerelle/ETH), targeting one named skill at a stated mastery level.
+const SYSTEM = `You write ONE practice problem for a Swiss mathematics learner on the BM → Passerelle → university track, targeting one named skill at a stated mastery level. Difficulty language: level 1-2 skills are Sek/early-BM routine, level 3 is the BM/FH core, level 4 is Passerelle entrance, level 5 is university first-year stretch.
 
 Return JSON {task, problem}:
 - "task": the instruction verb line, in German (Swiss Hochdeutsch, "ss" not "ß"), e.g. "Vereinfache:", "Löse nach x auf:", "Bestimme die Lösungsmenge:".

@@ -64,11 +64,22 @@ export interface DomainSnapshot {
   cov: number; // coverage 0..1
 }
 
+// Global ability: one problem = one observation of a single ability G on the same
+// logit scale as per-KC theta. Skills are correlated, so evidence anywhere is evidence
+// everywhere — this is the adaptive-testing shortcut that lets placement converge in a
+// dozen problems instead of demanding every one of 125 skills be demonstrated twice.
+export interface GlobalAbility {
+  theta: number; // logits, anchored so 0 = even odds on a BM-median (level 3) problem
+  RD: number; // rating deviation, drives step size + the "still settling" display
+  n: number; // problems observed
+}
+
 export interface SkillStore {
   version: 1;
   kcs: Record<string, KCState>;
   log: DomainSnapshot[];
   diffHist: number[]; // realized observed-difficulty tally [d1..d5], a spread audit
+  g: GlobalAbility;
 }
 
 // ---- locked constants ----
@@ -127,6 +138,10 @@ function score(sig: KCSignal): number {
 }
 
 // ---- store ----
+function freshG(): GlobalAbility {
+  return { theta: 0, RD: 1.2, n: 0 };
+}
+
 function load(): SkillStore {
   try {
     const saved = localStorage.getItem(KEY);
@@ -141,13 +156,14 @@ function load(): SkillStore {
             Array.isArray(p.diffHist) && p.diffHist.length === 5
               ? (p.diffHist as number[])
               : [0, 0, 0, 0, 0],
+          g: p.g && typeof p.g.theta === 'number' ? (p.g as GlobalAbility) : freshG(),
         };
       }
     }
   } catch {
     /* fall through to a fresh store */
   }
-  return { version: 1, kcs: {}, log: [], diffHist: [0, 0, 0, 0, 0] };
+  return { version: 1, kcs: {}, log: [], diffHist: [0, 0, 0, 0, 0], g: freshG() };
 }
 
 export const skillStore = reactive(load());
@@ -252,8 +268,61 @@ export function applySkillPacket(packet: SkillPacket, steps: number, now: number
   const blameScale = 1 / Math.max(1, wrongCredit);
 
   for (const o of use) eloUpdate(o, o.signal as KCSignal, od, blameScale, now);
+
+  // Global ability: this problem is ONE observation of G — the mean signal of ALL
+  // validated observations (`signed`, before the per-KC maxK truncation, whose
+  // worst-first ordering would bias a mean) at the observed difficulty. Uncertainty-
+  // driven step, floored RD so late problems still move it a little; no time decay
+  // (ability does not evaporate in days the way recall does). Two asymmetries on
+  // purpose: a clean solve the estimate already expected (E >= .85) is confirmation,
+  // not information — no upward push, so grinding easy problems cannot farm the
+  // placement — while a miss at that same easy difficulty still counts but is damped
+  // by its Fisher information, so routine slips and abandoned pages erode a strong
+  // estimate slowly instead of ratcheting it away with no recovery path.
+  const gSc = signed.reduce((a, o) => a + score(o.signal as KCSignal), 0) / signed.length;
+  const g = skillStore.g;
+  const gE = sigma(g.theta - (od - 3) * D_SLOPE);
+  if (!(gSc >= gE && gE >= 0.85)) {
+    const gK = Math.min(0.35, g.RD * g.RD);
+    const damp = gSc < gE && gE >= 0.85 ? 4 * gE * (1 - gE) : 1;
+    g.theta += gK * damp * (gSc - gE);
+    g.RD = Math.max(0.25, Math.sqrt(1 / (1 / (g.RD * g.RD) + Math.max(EPS, gE * (1 - gE)))));
+  }
+  g.n += 1;
+
   upsertSnapshots(use, now);
   persist();
+}
+
+// ---- placement: where the global ability sits on the Swiss school ladder ----
+
+// The level at which the learner would solve about 3 problems in 4 — the working
+// frontier, continuous on the 1..5 curriculum scale.
+const PLACE_SUCCESS_MARGIN = 1.1; // logit margin for ~75% success
+const INFER_N0 = 8; // problems until inference carries half weight
+
+export interface Placement {
+  level: number; // continuous 1..5, clamped
+  n: number; // problems behind the estimate
+  settled: boolean; // enough evidence to show a marker
+}
+
+export function placement(): Placement | null {
+  const g = skillStore.g;
+  if (g.n === 0) return null;
+  const level = Math.min(5, Math.max(1, 3 + (g.theta - PLACE_SUCCESS_MARGIN) / D_SLOPE));
+  return { level, n: g.n, settled: g.n >= 5 };
+}
+
+// P(an untouched skill at this curriculum level is already held), inferred from the
+// global ability and gated by how much evidence backs it — 0 with no data, so band
+// fills start honest and grow as the estimate firms up.
+export function inferredMastery(kcLevel: number): number {
+  const g = skillStore.g;
+  if (g.n === 0) return 0;
+  const iw = g.n / (g.n + INFER_N0);
+  const margin = g.theta - PLACE_SUCCESS_MARGIN - (kcLevel - 3) * D_SLOPE;
+  return iw * sigma(margin / 0.5);
 }
 
 // ---- display (computed on read; theta and RD stay sticky internally) ----
@@ -517,6 +586,7 @@ export function resetSkills(): void {
   for (const k of Object.keys(skillStore.kcs)) delete skillStore.kcs[k];
   skillStore.log.splice(0, skillStore.log.length);
   skillStore.diffHist.splice(0, skillStore.diffHist.length, 0, 0, 0, 0, 0);
+  Object.assign(skillStore.g, freshG());
   persist();
 }
 
