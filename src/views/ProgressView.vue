@@ -11,7 +11,7 @@ import {
   type DomainRollup,
 } from '@/stores/skills';
 import { generateDrill, type DrillProblem } from '@/drill';
-import { rankView, rankDrillTarget } from '@/rank';
+import { rankView, rankDrillTarget, RANKS } from '@/rank';
 import MathText from '@/components/MathText.vue';
 
 // Sentinel domain key for the aggregated "all touched domains" trajectory.
@@ -106,11 +106,8 @@ const placeBand = computed(() => {
   return l < 2.5 ? 'Sek' : l < 3.5 ? 'BM' : l < 4.5 ? 'Passerelle' : 'Uni';
 });
 
-function pct(n: number | null): string {
-  return n === null ? '—' : `${n}%`;
-}
 function domTip(d: DomainRollup): string {
-  const m = d.masteryPct === null ? 'not assessed' : `${d.masteryPct}% index`;
+  const m = d.masteryPct === null ? 'not assessed' : `${d.masteryPct}% mastery`;
   return `${d.label}\n${m} · ${d.touched}/${d.total} skills`;
 }
 </script>
@@ -134,24 +131,27 @@ function domTip(d: DomainRollup): string {
           <div class="rank-badge mono">{{ rank.rank.n }}</div>
           <div>
             <div class="rank-title">{{ rank.rank.title }}</div>
-            <div class="rank-anchor muted">{{ rank.rank.anchor }}</div>
+            <div class="rank-anchor muted">rank {{ rank.rank.n }} of {{ RANKS.length }} · {{ rank.rank.anchor }}</div>
           </div>
           <span class="spacer" />
-          <div v-if="rank.next" class="rank-next mono">
-            <div class="muted">next · {{ rank.next.title }}</div>
-            <div class="rank-nexttrack">
-              <span class="fill" :style="{ width: rank.nextProgress + '%' }" />
-            </div>
+          <div class="rank-dots" aria-hidden="true">
+            <span
+              v-for="r in RANKS"
+              :key="r.n"
+              class="dot"
+              :class="{ held: r.n <= rank.rank.n }"
+              :title="r.title"
+            />
           </div>
         </div>
 
         <div class="axis" :class="{ unplaced: markerPct === null }">
           <div class="axis-tracks">
-            <div v-for="b in rank.bands" :key="b.key" class="axis-seg" :title="`${b.label} — ${b.pct}% held, ${b.secured}/${b.total} secured`">
+            <div v-for="b in rank.bands" :key="b.key" class="axis-seg" :title="`${b.label} — ${b.secured}/${b.total} secured`">
               <div class="axis-track">
                 <span class="fill" :style="{ width: b.pct + '%' }" />
               </div>
-              <div class="axis-label mono">{{ b.short }}</div>
+              <div class="axis-label mono">{{ b.short }} <span class="axis-pct">{{ b.pct }}%</span></div>
             </div>
           </div>
           <div v-if="markerPct !== null" class="axis-marker" :style="{ left: markerPct + '%' }">
@@ -171,10 +171,9 @@ function domTip(d: DomainRollup): string {
         </div>
 
         <div v-if="rank.next" class="gate-row">
-          <span class="gate-line">
-            <span class="muted">to {{ rank.next.title }}:</span>
-            {{ rank.nextStep }}
-          </span>
+          <span class="gate-line muted">to {{ rank.next.title }}</span>
+          <span class="gate-track"><span class="fill" :style="{ width: rank.nextProgress + '%' }" /></span>
+          <span class="gate-line">{{ rank.nextStep }}</span>
           <button class="ghost" :disabled="drillBusy" @click="makeDrill">
             {{ drillBusy ? 'Writing…' : drill ? 'Another one' : 'Drill one' }}
           </button>
@@ -194,7 +193,7 @@ function domTip(d: DomainRollup): string {
         <div v-if="rec.drill" class="rec-line">
           <span class="rec-tag">Work on</span>
           <strong>{{ rec.drill.label }}</strong>
-          <span class="muted"> — your weakest tracked skill, {{ rec.drill.masteryPct }}% index</span>
+          <span class="muted"> — your weakest tracked skill, {{ rec.drill.masteryPct }}% mastery</span>
         </div>
         <div v-if="rec.review" class="rec-line">
           <span class="rec-tag review">Refresh</span>
@@ -203,29 +202,6 @@ function domTip(d: DomainRollup): string {
         </div>
         <div class="muted small rec-aim">
           Pick problems you would get right about 4 times in 5 — hard enough to stretch, not to stall.
-        </div>
-      </div>
-
-      <div class="stat-grid">
-        <div class="card stat">
-          <div class="k">Coverage</div>
-          <div class="v">{{ summary.coveredKCs }}/{{ summary.totalKCs }}</div>
-          <div class="sub">{{ summary.domainsTouched }} of {{ summary.totalDomains }} domains</div>
-        </div>
-        <div class="card stat">
-          <div class="k">Strongest area</div>
-          <div class="v area">{{ summary.strongest ? summary.strongest.label : '—' }}</div>
-          <div class="sub">{{ summary.strongest ? pct(summary.strongest.masteryPct) + ' index' : '' }}</div>
-        </div>
-        <div class="card stat">
-          <div class="k">Weakest area</div>
-          <div class="v area">{{ summary.weakest ? summary.weakest.label : '—' }}</div>
-          <div class="sub">{{ summary.weakest ? pct(summary.weakest.masteryPct) + ' index' : '' }}</div>
-        </div>
-        <div class="card stat">
-          <div class="k">Getting rusty</div>
-          <div class="v">{{ summary.rusty }}</div>
-          <div class="sub">strong but going stale</div>
         </div>
       </div>
 
@@ -252,7 +228,7 @@ function domTip(d: DomainRollup): string {
           </div>
         </div>
         <div class="legend">
-          <span><span class="dot" style="background: var(--chart-out)" />mastery index (0-100)</span>
+          <span><span class="dot" style="background: var(--chart-out)" />mastery (0-100)</span>
           <span class="muted">dim = not assessed yet</span>
         </div>
       </div>
@@ -339,8 +315,8 @@ function domTip(d: DomainRollup): string {
       <p class="muted" style="font-size: 0.72rem; margin-top: 0.8rem">
         Each solved problem is tagged once against a fixed map of 125 math skills and folded into a
         local rating, so this updates live and costs no extra request. A skill rises with clean work,
-        dips on a miss, and fades when left untouched. Numbers are a mastery index, not a percentage
-        correct.
+        dips on a miss, and fades when left untouched. Mastery is a 0-100 estimate of how firmly a
+        skill is held, not a percentage of problems correct.
       </p>
     </template>
 
@@ -352,11 +328,6 @@ function domTip(d: DomainRollup): string {
 </template>
 
 <style scoped>
-.stat .v.area {
-  font-size: 1rem;
-  line-height: 1.2;
-}
-
 .bar-col.dim .bar-track {
   opacity: 0.4;
 }
@@ -413,21 +384,35 @@ function domTip(d: DomainRollup): string {
   font-size: 0.76rem;
 }
 
-.rank-next {
-  text-align: right;
-  font-size: 0.68rem;
-  min-width: 9rem;
+/* The six-rank ladder at a glance: held ranks are lit. */
+.rank-dots {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
 }
 
-.rank-nexttrack {
+.rank-dots .dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  background: transparent;
+}
+
+.rank-dots .dot.held {
+  border-color: var(--gold);
+  background: var(--gold);
+}
+
+.gate-track {
+  flex: 0 0 7rem;
   height: 0.4rem;
   background: var(--panel-2);
   border-radius: 3px;
   overflow: hidden;
-  margin-top: 0.3rem;
 }
 
-.rank-nexttrack .fill,
+.gate-track .fill,
 .axis-track .fill {
   display: block;
   height: 100%;
@@ -474,6 +459,10 @@ function domTip(d: DomainRollup): string {
   letter-spacing: 0.05em;
   color: var(--muted);
   text-align: center;
+}
+
+.axis-pct {
+  color: var(--ink);
 }
 
 .axis-marker {
