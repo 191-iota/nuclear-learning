@@ -7,7 +7,7 @@ import { modelInfo } from '@/models';
  * session) and persisted to localStorage so the dashboard survives reloads.
  *
  * Each record carries the model it ran on, so cost is priced per record (the
- * tiered flow runs solves/confirms on Opus and routine verifies on a cheap model).
+ * tiered flow runs solves/confirms on the strong model and routine verifies on a cheap one).
  *
  * Console access:  __nlUsage.summary() · __nlUsage.records() · __nlUsage.clear()
  */

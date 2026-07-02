@@ -11,7 +11,7 @@ import {
 } from '@/kc';
 
 /**
- * Skill-mastery estimator. The Opus assessor (see useFeedback) is a stateless
+ * Skill-mastery estimator. The solve/confirm assessor (see useFeedback) is a stateless
  * sensor: once per solved problem it tags the work against the fixed knowledge-
  * component taxonomy and emits a tiny typed packet. This store is the estimator
  * that turns those packets into a per-skill mastery you can track over time. All

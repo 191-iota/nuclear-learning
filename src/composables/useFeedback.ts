@@ -39,8 +39,8 @@ const SOLUTION_SCHEMA = {
 };
 
 // Tagging schema: SOLUTION_SCHEMA plus the skill-mastery fields. Used only on the
-// Opus calls that already fire once per problem (solve + confirm/resolution), so the
-// skill map costs zero extra requests. The cheap per-scan verify uses SOLUTION_SCHEMA
+// strong-model calls that already fire once per problem (solve + confirm/resolution), so
+// the skill map costs zero extra requests. The cheap per-scan verify uses SOLUTION_SCHEMA
 // instead, so the 125-id enum is never sent on the repetitive middle scans. `signal`
 // carries a 'none' sentinel for membership-only (in-progress) emissions; `difficulty`
 // is always present (the model gives its best estimate even when skills is empty).
@@ -92,8 +92,12 @@ function normalize(text: string): string {
 // Feedback language. `settings.api.feedbackLang` selects the language of the
 // learner-facing verdict. The control tokens OK and CORRECT stay literal so the
 // chime/silence logic keeps working; only the spoken hint is translated.
+// No label prefix: the old 'Start an error hint with "Schritt [N]:"' rule conflicted with
+// the never-say-step-N rule in the math prompt and produced mangled double-location
+// sentences. The word-for-word repeat rule is what keeps the audio dedup working now.
+// "unleserlich"/"nicht lesen" are mandated because isReadNudge() keys on them.
 const GERMAN_GRADING =
-  'Write the learner-facing verdict in German (Swiss Hochdeutsch, use "ss" not "ß"). Start an error hint with "Schritt [N]:" rather than "Step [N]:". Keep the control words OK and CORRECT exactly as written; never translate them.';
+  'Write the learner-facing verdict in German (Swiss Hochdeutsch, use "ss" not "ß") as ONE natural spoken sentence, the way a teacher would say it aloud. Never put a label or prefix before it — no "Schritt N:", no phrase ending in a colon — and state the location exactly once, inside the sentence, by naming the expression or spot the learner actually wrote (for example "Bei x hoch drei mal x hoch zwei wurden die Exponenten multipliziert."). When you re-report any still-applicable feedback — an unfixed error, a still-needed rewrite request, or a still-unfinished simplification remark — repeat your earlier sentence word for word. For an illegibility nudge, say you cannot read the spot and ask for a rewrite, naming the nearest readable expression and using the words "unleserlich" or "nicht lesen" (for example "Ich kann den Exponenten im unterstrichenen Ergebnis nicht lesen, bitte neu schreiben."). Keep the control words OK and CORRECT exactly as written; never translate them.';
 const GERMAN_PLAIN = 'Write your reply to the learner in German (Swiss Hochdeutsch, use "ss" not "ß").';
 
 function langLine(mode: Mode): string {
@@ -128,7 +132,7 @@ export function useFeedback() {
   // One lesson per problem: set once a corrected mistake is logged this session.
   let lessonCaptured = false;
   // Latest learner-facing correction emitted on this page (what was wrong + the
-  // right version, LaTeX). Set by the resolving Opus call, read by the lesson
+  // right version, LaTeX). Set by the resolving confirm call, read by the lesson
   // capture so the review card shows a real, rendered correction, not the cryptic
   // live hint. Cleared on resetSession.
   let lastCorrection: { wrong: string; right: string } | null = null;
@@ -200,10 +204,17 @@ export function useFeedback() {
     return /can.?t read|rewrite it|illegible|unleserlich|nicht lesen/i.test(text);
   }
 
+  // A finish nudge ("... can still be simplified") reports unfinished work, not a mistake:
+  // it must never seed a lesson nor count as an error in the abandon hook. The systemPrompt
+  // mandates these exact words, mirroring the isReadNudge contract.
+  function isFinishNudge(text: string): boolean {
+    return /can still be simplified|noch vereinfach/i.test(text);
+  }
+
   function lastError(): string {
     for (let i = history.length - 1; i >= 0; i--) {
       const h = history[i];
-      if (!isQuiet(h) && !isCorrect(h) && !isReadNudge(h)) return h;
+      if (!isQuiet(h) && !isCorrect(h) && !isReadNudge(h) && !isFinishNudge(h)) return h;
     }
     return '';
   }
@@ -279,7 +290,8 @@ export function useFeedback() {
     };
   }
 
-  // A resolving CORRECT carries real per-skill signal; fold it into the estimator once.
+  // A resolving CORRECT (from solve or confirm) carries real per-skill signal; fold it
+  // into the estimator once.
   function captureSkills(r: Reply): void {
     pageReachedCorrect = true;
     if (settings.api.trackSkills && !skillApplied && r.skills?.length) {
@@ -317,6 +329,9 @@ export function useFeedback() {
   // Per-request context for the solve-once-then-verify path. When a solution is
   // already cached we attach it and ask the model to verify against it (cheap);
   // otherwise we ask it to solve the problem and hand back the worked solution.
+  // Triage, voice, and the school-convention rules live ONLY in the mode systemPrompt
+  // (shared by solve, verify, and confirm); these branches carry just what is unique
+  // to the call, so nothing here can drift against the stable rules.
   function buildCachedContext(hasCache: boolean): string {
     const lines: string[] = [];
     if (hasCache) {
@@ -324,35 +339,34 @@ export function useFeedback() {
         'The correct solution to the current problem is:',
         cachedSolution,
         '',
-        'Verify the learner\'s work against this solution on every scan using the grading rules in your instructions; do not re-derive it, and leave "solution" empty.',
-        'CORRECTION (stored for the learner\'s later review, never spoken): if your verdict is CORRECT and the earlier feedback below had flagged a mistake the learner has since fixed, fill `correction.wrong` with the specific error they made and `correction.right` with the corrected version, each ONE short line, writing every mathematical expression in LaTeX between single $ delimiters (for example $\\overline{a\\cdot b}=\\bar a+\\bar b$). This field is for review only, so naming the right answer here is fine and does not change your verdict. If there was no earlier mistake, leave both empty.',
+        `The problem label used so far is "${cachedProblem}".`,
+        'Verify the learner\'s work against this solution on every scan using the grading rules in your instructions. Do not re-derive the solution for parts it already covers; if the page now shows a sub-part or problem it does NOT cover, work that part out yourself and return ONLY that part\'s checklist lines in "solution" (never repeat lines the reference above already contains) — otherwise leave "solution" empty. Keep the label above in "problem" while grading work the reference covers; when you solve a NEW sub-part, set "problem" to that new sub-part\'s label instead.',
+        'This reference is internal scaffolding and may be more general than the textbook answer: where it carries qualifications the textbook form drops (absolute-value bars, domain notes), the learner\'s textbook-form answer still MATCHES (y for |y|). A dropped SOLUTION of an equation is never such a qualification — x = 3 against a reference x = ±3 is a lost root, a real error — and nothing is droppable on a task explicitly about domains, cases, or absolute value. Before flagging any error, check that it survives the SCHOOL CONVENTIONS.',
+        'CORRECTION (stored for the learner\'s later review, never spoken): if your verdict is CORRECT and the earlier feedback below had flagged a mistake the learner has since fixed, fill `correction.wrong` with the specific error they made and `correction.right` with the corrected version, each ONE short line, writing every mathematical expression in LaTeX between single $ delimiters (for example $\\overline{a\\cdot b}=\\bar a+\\bar b$). Naming the right answer here is fine and does not change your verdict. If there was no earlier mistake, leave both empty.',
       );
     } else {
       lines.push(
-        'No solution has been worked out for the current problem yet. The PROBLEM is the ORIGINAL expression or task the learner started from: the first, topmost line, before any "=" sign and before any reworking. A task like "Vereinfachen" (simplify) or "nach b auflösen" (solve for b) applies to THAT original expression. Everything the learner wrote after it (later lines, equalities, crossed-out reworkings) is their ATTEMPT to be graded, never part of the problem, so NEVER take a later or reworked line as the given. Solve that original problem completely yourself from scratch, and return the full worked solution in "solution" with a short label in "problem" (keep it ready even on a scan where you stay silent). If the original statement is still incomplete or you cannot determine it, leave "solution" empty.',
-        'Then grade the current work against the solution you just derived: check every fully-written line, and the moment a completed line or equality does not follow correctly from the one before it, name that first diverging step; do not wait for a final answer to flag a clear mistake. Respond CORRECT ONLY when every sub-part is answered with its own clearly-marked result and every earlier error is fixed; otherwise, when the work so far is correct, OK. Give no advice.',
-        'Respond OK only while the newest line is still visibly being written. A line the learner marked "falsch" or struck through and redirected with an arrow to a redo is finished: do not report that mistake again, and stay OK while the redo is in progress.',
+        'No solution has been worked out for the current problem yet. The PROBLEM is the ORIGINAL expression or task the learner started from: the first, topmost line, before the learner\'s own reworking. An "=" that is part of the given equation or formula belongs to the problem itself; an "=" the learner added while reworking does not. A task verb like "Vereinfachen" (simplify) or "nach b auflösen" (solve for b) applies to THAT original expression; everything written after it is the learner\'s ATTEMPT, never part of the problem, so NEVER take a later or reworked line as the given.',
+        'Solve that original problem completely yourself from scratch and return the worked solution in "solution" with a short label in "problem", keeping it ready even on a scan where you stay silent. Write it as a Swiss BM textbook would print it, per the SCHOOL CONVENTIONS in your instructions: no absolute values, case distinctions, or domain notes the task does not ask for, and the complete solution set when solving an equation. If the original statement is still incomplete or you cannot determine it, leave "solution" empty and reply with verdict OK.',
+        'Then grade the current work against the solution you just derived, per your instructions.',
       );
     }
+    // The constant language line sits above the history so the growing part stays last.
+    if (settings.api.feedbackLang === 'German') lines.push('', GERMAN_GRADING);
     if (history.length > 0) {
       // History goes LAST: it grows every scan, so keeping it after the stable per-problem solution
       // and instructions leaves that prefix intact for OpenAI prompt caching.
       lines.push(
         '',
-        'Feedback you gave EARLIER on this same page (oldest first). The learner may have since fixed some of these, so check each one against the CURRENT work: if a step you flagged now follows correctly, it is FIXED — do NOT report it again and do NOT let it keep you from OK/CORRECT. Only re-report an error that is STILL wrong in what is written now.',
+        'Feedback you gave EARLIER on this same page (oldest first). The learner may have since fixed some of these, so check each one against the CURRENT work: if a step you flagged now follows correctly, it is FIXED — do NOT report it again and do NOT let it keep you from OK/CORRECT. Only re-report an error that is STILL wrong in what is written now, repeating your earlier sentence VERBATIM from this list.',
         history.map((h, i) => `${i + 1}. ${h}`).join('\n'),
       );
     }
-    lines.push(
-      '',
-      'Phrase any correction you speak as one short sentence in plain words a voice can read: no LaTeX, no dollar signs, no backslash commands, saying fractions as "a over b" and powers as "squared". Keep LaTeX only in the stored `correction` field, never in the spoken `verdict`.',
-    );
-    if (settings.api.feedbackLang === 'German') lines.push('', GERMAN_GRADING);
     return lines.join('\n');
   }
 
-  // One structured call to a given model. Cheap models (e.g. Haiku) don't take the
-  // effort parameter or adaptive thinking, so those are omitted for them. When
+  // One structured call to a given model. Models that don't take the effort
+  // parameter have it omitted (see models.ts). When
   // `tagSkills` is set the call also carries the constant skill-assessor block (cached)
   // and the wider tagging schema, so the reply includes difficulty + per-skill tags;
   // the routine cheap-verify scans pass `tagSkills` false to stay lean.
@@ -415,9 +429,9 @@ export function useFeedback() {
       wrong: (parsed?.correction?.wrong ?? '').trim(),
       right: (parsed?.correction?.right ?? '').trim(),
     };
-    // Latch the latest non-empty correction for the page. The resolving Opus call is the
-    // one instructed to fill it, so by the time a problem turns CORRECT this holds that
-    // call's correction; an empty one never clobbers a real one.
+    // Latch the latest non-empty correction for the page. The resolving verify/confirm
+    // calls are the ones instructed to fill it, so by the time a problem turns CORRECT
+    // this holds that correction; an empty one never clobbers a real one.
     if (correction.wrong || correction.right) lastCorrection = correction;
     // Tag read is decoupled and best-effort, so a malformed skills array can never block
     // the verdict / chime.
@@ -448,8 +462,8 @@ export function useFeedback() {
   // worked checklist; if the statement is not yet complete it returns an empty solution and we quietly
   // retry next scan. So gpt-5.4 itself is the gatekeeper, not a flaky cheap readiness check. From then on
   // gpt-5.4-mini verifies every scan against the cache and corrects continuously (staying OK while a
-  // line is mid-working and only flagging a settled result), and gpt-5.4 confirms a finished answer at LOW
-  // effort before we acknowledge. Clear moves on to a new problem.
+  // line is mid-working and only flagging a settled result), and gpt-5.4 confirms a finished answer at
+  // MEDIUM effort before we acknowledge. Clear moves on to a new problem.
   async function getFeedbackCached(
     data: string,
     mediaType: ImageMediaType,
@@ -483,8 +497,11 @@ export function useFeedback() {
       return r.verdict;
     }
 
-    // VERIFY every scan on Sonnet against the cache, correcting continuously. It stays OK while a
-    // line or a redo is still being written, and flags the first diverging settled result.
+    // VERIFY every scan on the cheap model against the cache, correcting continuously. It stays
+    // OK while a line or a redo is still being written, and flags the first diverging settled
+    // result. It is told to solve only a sub-part the cache does not cover yet; that solution is
+    // latched ADDITIVELY so a page with 1a) cached and 1b) freshly written grows one reference
+    // instead of re-deriving 1b) on every scan.
     const r = await callModel(
       settings.api.verifyModel,
       settings.api.verifyEffort,
@@ -494,6 +511,21 @@ export function useFeedback() {
       mode,
       buildCachedContext(true),
     );
+    // Bounded and line-deduped: a verify model that (against instructions) re-returns
+    // covered lines must not grow or duplicate the per-scan reference. The problem label
+    // only moves when a genuinely new part was latched, so the CORRECT delivery key
+    // stays stable across the repeat scans of one finished problem.
+    if (r.solution && cachedSolution.length < 4000) {
+      // Line equality, not substring containment: a new "x = 2" must latch even though it
+      // occurs inside an older "3x = 21".
+      const seen = new Set(cachedSolution.split('\n').map((s) => s.trim()));
+      const fresh = r.solution.split('\n').filter((l) => l.trim() && !seen.has(l.trim()));
+      if (fresh.length) {
+        cachedSolution += `\n${fresh.join('\n')}`;
+        lastSteps = solutionSteps();
+        if (r.problem) cachedProblem = r.problem;
+      }
+    }
     if (!isCorrect(r.verdict)) return r.verdict;
 
     // The verify judged the answer finished and right: gpt-5.4 confirms at medium effort before we say so.
@@ -517,9 +549,17 @@ export function useFeedback() {
     const key = normalize(text);
     if (!history.some((h) => normalize(h) === key)) {
       history.push(text);
-      // Keep only the last few verdicts as context, enough for consistency,
-      // small enough to keep re-sent input down on every scan.
-      if (history.length > 4) history.shift();
+      // Keep only the last few verdicts as context, enough for consistency, small enough
+      // to keep re-sent input down on every scan. Evict in safety order — oldest CORRECT
+      // first, then nudges, then the oldest entry — and never the newest entry: unresolved
+      // error sentences are the verbatim source the repeat rule and the audio dedup key
+      // on, and the newest feedback is the one most likely still active.
+      if (history.length > 4) {
+        const evictable = history.slice(0, -1);
+        let i = evictable.findIndex((h) => isCorrect(h));
+        if (i < 0) i = evictable.findIndex((h) => isReadNudge(h) || isFinishNudge(h));
+        history.splice(i >= 0 ? i : 0, 1);
+      }
     }
   }
 
@@ -533,11 +573,13 @@ export function useFeedback() {
     return /^\s*ok[.!]?\s*$/i.test(text);
   }
 
-  // Identity used to suppress replayed audio. A "Step N: ..." correction keys on
-  // the step, so a reworded hint for the same unfixed step is not replayed.
+  // Identity used to suppress replayed audio. The grader is instructed to repeat a
+  // still-unresolved error word for word (there is no step-number prefix to key on), so
+  // plain normalized text is the key. CORRECT keys on the problem label: two problems
+  // finished on the same page must each earn their own spoken confirmation.
   function deliveryKey(text: string): string {
-    const step = /^\s*((?:step|schritt)\s+\d+)\b/i.exec(text);
-    return step ? step[1].toLowerCase().replace(/\s+/g, ' ') : normalize(text);
+    if (isCorrect(text)) return `correct::${normalize(cachedProblem)}`;
+    return normalize(text);
   }
 
   function speak(text: string): void {
@@ -630,10 +672,13 @@ export function useFeedback() {
     // Abandon hook (runs before state is cleared): if a page never resolved CORRECT but
     // kept showing an error, deposit a 'wrong' on the solve-time membership's core skills
     // so the estimator sees losses, not only wins. Reuses the solve-time membership, so
-    // there is no extra Opus call. A hedged-but-correct page deposits a clean instead.
+    // there is no extra solve-model call. A hedged-but-correct page deposits a clean instead.
+    // Illegibility nudges are not mathematical errors, so they can never turn a page 'wrong'.
     if (settings.api.trackSkills && !skillApplied && skillMembership) {
-      const errors = history.filter((h) => h && !isQuiet(h) && !isCorrect(h));
-      const hadError = errors.length >= 1 && history.length >= 2;
+      const errors = history.filter(
+        (h) => h && !isQuiet(h) && !isCorrect(h) && !isReadNudge(h) && !isFinishNudge(h),
+      );
+      const hadError = errors.length >= 1;
       const sig: 'clean' | 'wrong' | null = pageReachedCorrect ? 'clean' : hadError ? 'wrong' : null;
       if (sig) {
         const all = skillMembership.skills ?? [];
