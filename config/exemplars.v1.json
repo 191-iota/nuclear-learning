@@ -1,0 +1,302 @@
+[
+  {
+    "domain": "core",
+    "level": 1,
+    "problem": "Compute 7 - 3 * (-2).",
+    "whoBeatsIt": "any Sek I student: one sign-rule step inside a trivial order-of-operations chain"
+  },
+  {
+    "domain": "core",
+    "level": 2,
+    "problem": "Solve v = v0 + a*t for t.",
+    "whoBeatsIt": "an EFZ/early-BM student: one clean isolate-the-variable move on a linear formula"
+  },
+  {
+    "domain": "core",
+    "level": 3,
+    "problem": "Solve 1/f = 1/a + 1/b for a.",
+    "whoBeatsIt": "a solid BM student: multi-step fraction rearrangement (combine over common denominator, invert) is drilled BM routine"
+  },
+  {
+    "domain": "core",
+    "level": 4,
+    "problem": "Write (3x+5)/((x-1)(x+2)) in the form A/(x-1) + B/(x+2).",
+    "whoBeatsIt": "a Passerelle entrant: partial-fraction setup couples an ansatz with a small linear system, beyond drilled BM Bruchterme"
+  },
+  {
+    "domain": "core",
+    "level": 5,
+    "problem": "Prove that (a+b)/2 >= sqrt(a*b) for all a, b >= 0.",
+    "whoBeatsIt": "a university first-year: needs the (sqrt(a)-sqrt(b))^2 >= 0 proof idea, sign-rigor beyond Passerelle routine manipulation"
+  },
+  {
+    "domain": "num",
+    "level": 1,
+    "problem": "Compute 2/3 + 1/4 and give the result as a single fraction.",
+    "whoBeatsIt": "any Sek I student: common-denominator fraction addition is a drilled single-step routine"
+  },
+  {
+    "domain": "num",
+    "level": 2,
+    "problem": "Write sqrt(48) in the form a*sqrt(b) with b as small as possible.",
+    "whoBeatsIt": "an EFZ/early-BM student: one concept (extracting square factors from a radical) cleanly applied"
+  },
+  {
+    "domain": "num",
+    "level": 3,
+    "problem": "Compute (3+2i)(1-4i) and give the result in the form a+bi.",
+    "whoBeatsIt": "a solid BM/FH-year-1 student: complex arithmetic is first taught at FH entry and is purely mechanical once known"
+  },
+  {
+    "domain": "num",
+    "level": 4,
+    "problem": "Find all complex solutions of z^3 = 8 and give each in the form a+bi.",
+    "whoBeatsIt": "a Passerelle-entrance student: needs the non-obvious polar-form setup and all three roots, which a BM student never saw"
+  },
+  {
+    "domain": "num",
+    "level": 5,
+    "problem": "Prove that sqrt(2) is irrational.",
+    "whoBeatsIt": "a university Basisjahr student: writing a rigorous contradiction proof via divisibility is hard even for Passerelle graduates"
+  },
+  {
+    "domain": "alg",
+    "level": 1,
+    "problem": "Solve 5x - 3 = 12.",
+    "whoBeatsIt": "any Sek I student: a two-step linear equation is single-move routine"
+  },
+  {
+    "domain": "alg",
+    "level": 2,
+    "problem": "Solve the system: 2x + y = 7, x - y = 2.",
+    "whoBeatsIt": "an EFZ/early-BM student: elimination on a 2x2 system is one concept, cleanly applied"
+  },
+  {
+    "domain": "alg",
+    "level": 3,
+    "problem": "Solve 2x^2 - 3x - 5 = 0.",
+    "whoBeatsIt": "a solid BM student: the quadratic formula is core BM material, applied mechanically"
+  },
+  {
+    "domain": "alg",
+    "level": 4,
+    "problem": "Find all real solutions of x^3 - 2x^2 - 5x + 6 = 0.",
+    "whoBeatsIt": "a Passerelle-entrance student: needs a guessed root plus polynomial division, beyond BM routine"
+  },
+  {
+    "domain": "alg",
+    "level": 5,
+    "problem": "Determine all real k for which the system kx + y = 1, x + ky = 1 has no solution.",
+    "whoBeatsIt": "a Basisjahr student: full parameter case analysis with justification exceeds Passerelle routine"
+  },
+  {
+    "domain": "fn",
+    "level": 1,
+    "problem": "Given f(x) = 3x - 4, compute f(2).",
+    "whoBeatsIt": "any Sek I student: a single numeric substitution into function notation"
+  },
+  {
+    "domain": "fn",
+    "level": 2,
+    "problem": "State the domain of f(x) = sqrt(x - 4).",
+    "whoBeatsIt": "an EFZ/early-BM student: one clean condition, x - 4 >= 0"
+  },
+  {
+    "domain": "fn",
+    "level": 3,
+    "problem": "Find the inverse function of f(x) = (2x - 1)/(x + 3).",
+    "whoBeatsIt": "a solid BM student: taught swap-and-solve procedure on a rational function"
+  },
+  {
+    "domain": "fn",
+    "level": 4,
+    "problem": "Find all a such that f(x) = ln(x^2 - 2ax + 3a) is defined for all real x.",
+    "whoBeatsIt": "a Passerelle candidate: couples log domain with a quadratic discriminant condition"
+  },
+  {
+    "domain": "fn",
+    "level": 5,
+    "problem": "Prove f(x) = x/(1 + |x|) maps R bijectively onto (-1, 1) and find its inverse.",
+    "whoBeatsIt": "a Basisjahr student: injectivity/surjectivity proof with case analysis on |x|"
+  },
+  {
+    "domain": "seq",
+    "level": 2,
+    "problem": "Find the 20th term of the arithmetic sequence 3, 7, 11, 15, ...",
+    "whoBeatsIt": "any early-BM/EFZ student: one clean application of a_n = a_1 + (n-1)d"
+  },
+  {
+    "domain": "seq",
+    "level": 3,
+    "problem": "Find the sum of the infinite geometric series 8 + 4 + 2 + 1 + ...",
+    "whoBeatsIt": "a solid BM student: mechanical s = a/(1-q) once the BM series unit is taught"
+  },
+  {
+    "domain": "seq",
+    "level": 4,
+    "problem": "Find the smallest n for which 5 + 5*1.2 + 5*1.2^2 + ... + 5*1.2^(n-1) exceeds 1000.",
+    "whoBeatsIt": "a Passerelle entrant: couples the geometric sum formula with a logarithmic solve for n"
+  },
+  {
+    "domain": "seq",
+    "level": 5,
+    "problem": "Show that a_1 = 1, a_(n+1) = sqrt(2 + a_n) converges and find its limit.",
+    "whoBeatsIt": "a university first-year: couples induction, monotone-bounded argument, and fixed-point limit, hard even for Passerelle graduates"
+  },
+  {
+    "domain": "calc",
+    "level": 3,
+    "problem": "Differentiate f(x) = 3x^4 - 5x^2 + 2x - 7.",
+    "whoBeatsIt": "an FH year-1 (or Passerelle) student, since the power rule is mechanical once taught but BM-TALS contains no calculus"
+  },
+  {
+    "domain": "calc",
+    "level": 4,
+    "problem": "A rectangular pen along a wall uses 120 m of fence on 3 sides; maximize the area.",
+    "whoBeatsIt": "a Passerelle-entrance student, since translating the constraint into A(x) and optimizing needs a setup beyond mechanical differentiation"
+  },
+  {
+    "domain": "calc",
+    "level": 5,
+    "problem": "Solve the initial value problem y' = 2xy with y(0) = 3.",
+    "whoBeatsIt": "a university Basisjahr student, since separable ODEs with initial conditions sit beyond even Passerelle integral calculus"
+  },
+  {
+    "domain": "la",
+    "level": 2,
+    "problem": "Compute the dot product of the vectors a=(2,-1,3) and b=(4,0,5).",
+    "whoBeatsIt": "any EFZ/early-BM student, since it is one formula applied componentwise"
+  },
+  {
+    "domain": "la",
+    "level": 3,
+    "problem": "Solve the system x+y+z=6, 2x-y+z=3, x+2y-z=2 using Gaussian elimination.",
+    "whoBeatsIt": "a solid BM/FH-year-1 student, since elimination is purely mechanical once taught"
+  },
+  {
+    "domain": "la",
+    "level": 4,
+    "problem": "Find the eigenvalues and eigenvectors of the matrix [[2,1],[1,2]].",
+    "whoBeatsIt": "a Passerelle entrant, since it couples the characteristic polynomial with null-space solving beyond BM scope"
+  },
+  {
+    "domain": "la",
+    "level": 5,
+    "problem": "Let T(x)=Ax with A=[[1,2,0],[0,1,1],[1,3,1]]; find bases of ker(T) and im(T).",
+    "whoBeatsIt": "a Basisjahr student, since it couples the linear-map concept with rank, kernel and basis extraction"
+  },
+  {
+    "domain": "disc",
+    "level": 1,
+    "problem": "Given A = {1,2,3} and B = {2,3,4}, list the elements of A union B.",
+    "whoBeatsIt": "any Sek I student: merging two small listed sets is a single trivial step"
+  },
+  {
+    "domain": "disc",
+    "level": 2,
+    "problem": "Construct the truth table for (p AND q) OR (NOT p).",
+    "whoBeatsIt": "an EFZ/early-BM student: one concept, mechanically filling four rows"
+  },
+  {
+    "domain": "disc",
+    "level": 3,
+    "problem": "In how many ways can a committee of 3 people be chosen from 10 people?",
+    "whoBeatsIt": "a solid BM student: one direct application of C(10,3) once the formula is taught"
+  },
+  {
+    "domain": "disc",
+    "level": 4,
+    "problem": "Prove by induction that 1 + 2 + ... + n = n(n+1)/2 for all n >= 1.",
+    "whoBeatsIt": "a Passerelle student: induction is untaught in BM but routine after the Passerelle proof schema"
+  },
+  {
+    "domain": "disc",
+    "level": 5,
+    "problem": "Prove that any 6-element subset of {1,...,10} contains two numbers summing to 11.",
+    "whoBeatsIt": "a Basisjahr student: requires inventing the pair partition before pigeonhole applies"
+  },
+  {
+    "domain": "prob",
+    "level": 1,
+    "problem": "A fair die is rolled once. Find the probability of rolling a 6.",
+    "whoBeatsIt": "any Sek I student — one trivial Laplace ratio, favorable over total outcomes"
+  },
+  {
+    "domain": "prob",
+    "level": 2,
+    "problem": "Two fair dice are rolled. Find the probability that the sum equals 7.",
+    "whoBeatsIt": "an EFZ/early-BM student — one concept, the 36-outcome sample space, cleanly applied"
+  },
+  {
+    "domain": "prob",
+    "level": 3,
+    "problem": "An urn holds 4 red and 6 blue balls. Draw 2 without replacement; find P(both red).",
+    "whoBeatsIt": "a solid BM student — multiplication rule with a conditional second draw is BM-median material"
+  },
+  {
+    "domain": "prob",
+    "level": 4,
+    "problem": "A fair coin is tossed 10 times. Find the probability of getting exactly 7 heads.",
+    "whoBeatsIt": "a Passerelle entrant — couples combinatorial counting with independent-trial probabilities (binomial), beyond BM-TALS"
+  },
+  {
+    "domain": "prob",
+    "level": 5,
+    "problem": "Prove that a binomial random variable X with parameters n and p has E(X) = np.",
+    "whoBeatsIt": "a university Basisjahr student — proof-flavored, needs the binomial sum manipulation or linearity via indicator variables"
+  },
+  {
+    "domain": "geo",
+    "level": 1,
+    "problem": "Find the area of a rectangle with side lengths 6 cm and 9 cm.",
+    "whoBeatsIt": "any Sek I student — one area formula A = l*w applied in a single trivial step"
+  },
+  {
+    "domain": "geo",
+    "level": 2,
+    "problem": "A right triangle has legs 5 and 12. Find the length of the hypotenuse.",
+    "whoBeatsIt": "an EFZ/early-BM student — Pythagoras is one concept applied cleanly, answer 13"
+  },
+  {
+    "domain": "geo",
+    "level": 3,
+    "problem": "In a triangle, sides a=7 and b=9 enclose an angle of 52 deg. Find the third side c.",
+    "whoBeatsIt": "a solid BM student — the cosine rule is mechanical once taught, the BM median skill"
+  },
+  {
+    "domain": "geo",
+    "level": 4,
+    "problem": "Solve 2*cos(x)^2 + sin(x) = 1 for 0 <= x < 2*pi.",
+    "whoBeatsIt": "a Passerelle entrant — needs the identity cos^2=1-sin^2 plus a quadratic in sin(x) plus unit-circle reading, where BM students typically fail"
+  },
+  {
+    "domain": "geo",
+    "level": 5,
+    "problem": "Prove that in any triangle, a/sin(A) = 2R, where R is the circumradius.",
+    "whoBeatsIt": "a Basisjahr student — proof-flavored, requires the inscribed-angle/Thales construction, rigor beyond Passerelle routine"
+  },
+  {
+    "domain": "vec",
+    "level": 2,
+    "problem": "Give a parametric equation of the line through A(1,2,3) and B(4,3,5).",
+    "whoBeatsIt": "any early-BM student: direction = B-A, then r = A + t*u is the first Vektorgeometrie recipe"
+  },
+  {
+    "domain": "vec",
+    "level": 3,
+    "problem": "Find the intersection point of the line r=(1,0,2)+t*(2,1,-1) and the plane x+y+z=9.",
+    "whoBeatsIt": "a solid BM student: substituting the parametric line into the plane equation is mechanical once taught"
+  },
+  {
+    "domain": "vec",
+    "level": 4,
+    "problem": "Compute the distance from P(4,5,3) to the line r=(1,2,3)+t*(2,1,2).",
+    "whoBeatsIt": "a Passerelle entrant: the foot-of-perpendicular (or cross-product) setup in 3D is non-obvious for a BM student"
+  },
+  {
+    "domain": "vec",
+    "level": 5,
+    "problem": "Prove the Cauchy-Schwarz inequality: |a.b| <= |a|*|b| for all vectors a, b in R^n.",
+    "whoBeatsIt": "a Basisjahr student: a general-n proof with a discriminant or projection argument, beyond Passerelle routine"
+  }
+]

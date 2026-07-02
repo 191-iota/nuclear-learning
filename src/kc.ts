@@ -1,4 +1,5 @@
 import kcDefs from '@config/kc.v1.json';
+import exemplarDefs from '@config/exemplars.v1.json';
 
 /**
  * The fixed knowledge-component taxonomy (config/kc.v1.json). This is the closed
@@ -74,6 +75,28 @@ export const KC_ID_LIST: string = DOMAINS.map((dom) => {
   return `${dom.key} (${dom.label}; ${dom.gloss}):\n  ${rows}`;
 }).join('\n');
 
+// Difficulty exemplar bank (config/exemplars.v1.json): anchor items for the assessor's
+// difficulty rating, one median problem per domain and level, authored against the
+// which-student-first-reliably-beats-it rule and cross-domain-verified. Rating becomes
+// nearest-exemplar MATCHING instead of abstract judgment — the way exam boards
+// calibrate raters with anchor items. Levels missing from a domain (calc 1-2, vec 1)
+// do not exist under that rule and are deliberately absent.
+export interface DifficultyExemplar {
+  domain: string;
+  level: 1 | 2 | 3 | 4 | 5;
+  problem: string;
+  whoBeatsIt: string; // rationale, dev-facing only — not sent to the model
+}
+export const EXEMPLARS = exemplarDefs as DifficultyExemplar[];
+
+const EXEMPLAR_LIST: string = DOMAINS.map((dom) => {
+  const rows = EXEMPLARS.filter((e) => e.domain === dom.key)
+    .sort((a, b) => a.level - b.level)
+    .map((e) => `${e.level}: ${e.problem}`)
+    .join('\n  ');
+  return `${dom.key}:\n  ${rows}`;
+}).join('\n');
+
 // The assessor instructions. Prepended (with KC_ID_LIST) as a constant, cached
 // system block before the mode's own grading prompt; see useFeedback. It never
 // receives accumulated state, so the prompt is the same size forever.
@@ -84,11 +107,14 @@ Fill "difficulty" and "skills":
 - "skills": on an unfinished attempt, the components solving this problem will require; on a finished attempt, the components the learner's OWN written route actually exercised — they may validly solve differently than you would, so tag their ink, not your derivation. Use ids ONLY from the list below; never invent or alter an id; if an exact skill is missing, use the closest listed id only when it genuinely covers the step, otherwise leave it out — a missing observation is cheaper than one filed under the wrong skill. Emit up to 6: any skill tagged "wrong" or "shaky" always makes the list and goes first, then load-bearing core skills, then incidental clean supports.
   - "role": "core" for what the problem is fundamentally about; "support" for atomic skills used incidentally (a sign or fraction step inside a calculus problem). Role is relative to THIS problem, not the skill's domain: in a pure fraction-arithmetic drill, core.arith.fraction-ops IS the core skill.
   - "signal": a finished attempt is a page you are grading CORRECT — every sub-part settled with its own marked final result — including one that turned CORRECT after earlier errors were fixed; whenever the attempt is not finished, emit every skill with "none". Only on a finished attempt: "wrong" only for a genuine mathematical error whose step exercised this skill — a convention-only difference (an absolute value from an even root in a simplification, an unrationalised denominator, a missing domain note, a decimal comma versus point) never makes any skill "wrong"; "shaky" only when the step exercising THIS skill was itself marked falsch, struck through, or redone — self-catching a slip shows the skill working, so it is shaky, not wrong, and a falsch mark on a step exercising a DIFFERENT skill, or a rewrite for neatness or legibility, does not make this skill shaky; "clean" if it was executed with no flagged error. Blame only the skill whose rule or step actually failed at the located error; every other exercised skill keeps its own observed signal — a located sign error tags core.arith.sign-rules "wrong" even if the final answer is now right, while a correctly-executed roots skill in the same problem stays "clean". Absence of an error hint is NOT evidence of clean execution, so leave out any skill you cannot see actually executed rather than calling it clean.
-- "difficulty" (1-5) rates the PROBLEM, anchored to the Swiss school ladder: 1 = Sek I routine (a single trivial step); 2 = Sek II / early BM routine (one concept, cleanly applied); 3 = solid BM/FH level (multi-step within one topic plus routine support skills — the BM median); 4 = Passerelle entrance level (couples two or more topics or needs a non-obvious setup); 5 = university first-year stretch or genuinely novel. Do NOT default to 3; push toward 1-2 or 4-5 whenever warranted. Examples: 2x+3=11 is 1; factor x^2+5x+6 is 2; optimize a fenced area with calculus is 3; solve a separable ODE with an initial condition is 4; classify the intersection of two planes given parametrically is 5.
+- "difficulty" (1-5) rates the PROBLEM as an opponent: the level of the student who first reliably beats it. RATE BY MATCHING: find the closest exemplar in the DIFFICULTY EXEMPLARS bank below — same domain first, then any domain — and take that exemplar's level; a problem clearly between two exemplars takes the closer one. Stage meaning: 1 = Sek I routine; 2 = Sek II / early-BM routine; 3 = solid BM/FH-entry (the BM median); 4 = Passerelle entrance; 5 = university first-year stretch. Do NOT default to 3; commit to the matched level.
 
 Disambiguation: counting inside a probability computation tags prob.comb.counting; pure combinatorics tags disc.comb.*. A small hand-solved system tags alg.system.linear-small; a matrix or Gaussian system tags la.system.gaussian-elimination.
 
-If you genuinely cannot identify any exercised skill, return "skills": [] — but still rate "difficulty" from the problem itself using the anchors above.
+If you genuinely cannot identify any exercised skill, return "skills": [] — but still rate "difficulty" from the problem itself by exemplar matching.
+
+DIFFICULTY EXEMPLARS (level: a median problem of that level), grouped by domain:
+${EXEMPLAR_LIST}
 
 KNOWLEDGE COMPONENTS (id: meaning), grouped by domain:
 ${KC_ID_LIST}`;
@@ -100,5 +126,19 @@ if (import.meta.env.DEV) {
   if (KC_SET.size !== KC_IDS.length) console.error('[nl] kc.v1.json has duplicate ids');
   for (const d of KC_DEFS) {
     if (!(d.level >= 1 && d.level <= 5)) console.error(`[nl] ${d.id} has bad level ${d.level}`);
+  }
+  // Exemplar bank: one anchor per (domain, level), unique problem text (a duplicate
+  // anchor poisons nearest-exemplar matching), known domains, prompt-sized lines.
+  const slots = new Set<string>();
+  const texts = new Set<string>();
+  const domKeys = new Set(DOMAINS.map((d) => d.key));
+  for (const e of EXEMPLARS) {
+    const slot = `${e.domain}:${e.level}`;
+    if (slots.has(slot)) console.error(`[nl] exemplars.v1.json duplicate slot ${slot}`);
+    slots.add(slot);
+    if (texts.has(e.problem)) console.error(`[nl] exemplars.v1.json duplicate problem "${e.problem}"`);
+    texts.add(e.problem);
+    if (!domKeys.has(e.domain)) console.error(`[nl] exemplar has unknown domain ${e.domain}`);
+    if (e.problem.length > 96) console.error(`[nl] exemplar too long: ${slot}`);
   }
 }
