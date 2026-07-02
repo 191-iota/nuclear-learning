@@ -52,15 +52,30 @@ export interface RankDef {
   minRating: number;
 }
 
+// Rank = the student identity whose IN-PROGRAM math level you perform at (not merely
+// whose admission you'd clear — that keeps the ordering strict where routes overlap).
+// The placements are source-grounded, not vibes:
+// - HF sits BELOW BM: HF admission runs on an EFZ + work experience with no BM (only
+//   ~10% of HF entrants hold one, BFS 2020), the math is applied and per-school, and
+//   the FHNW's own Vorkurs page judges completed-HF math "oft deutlich unter dem
+//   Niveau der technischen Berufsmatur".
+// - BM math (RLP 2025) is functions, equations, vector geometry, stochastics — no
+//   calculus; first real Analysis is FH year 1, and FH ENTRY is BM level by design.
+// - Strong FH ≈ Passerelle-pass-capable ≈ ETH-entry-equivalent (~2000): ETH prices a
+//   top FH bachelor at 40-60 ECTS of catch-up. ETH Student means surviving the
+//   math-weighted Basisjahr, which 35-50% of admitted students fail — so entry and
+//   survival are distinct rungs.
+// The first rank starts at the rating floor (ratings clamp at 400), so the progress
+// bar through the band starts empty.
 export const RANKS: RankDef[] = [
-  // Apprentice starts at the rating floor (ratings clamp at 400), so the progress bar
-  // through the band starts empty instead of a third full.
-  { n: 1, title: 'Apprentice', anchor: 'finding footing in Sek material', minRating: 400 },
-  { n: 2, title: 'Artisan', anchor: 'Sek held, BM opening', minRating: 1200 },
-  { n: 3, title: 'Operator', anchor: 'solid at the BM core', minRating: 1500 },
-  { n: 4, title: 'Vanguard', anchor: 'pressing into the Passerelle band', minRating: 1800 },
-  { n: 5, title: 'Master', anchor: 'Passerelle held, uni stretch underway', minRating: 2100 },
-  { n: 6, title: 'Grandmaster', anchor: 'uni-ready', minRating: 2300 },
+  { n: 1, title: 'Sek Student', anchor: 'Sek-level algebra and geometry taking shape', minRating: 400 },
+  { n: 2, title: 'HF Student', anchor: 'applied, job-anchored math — algebra, linear systems, functions from the graph', minRating: 1150 },
+  { n: 3, title: 'BM Student', anchor: 'the BM core: functions, equations, vector geometry, stochastics', minRating: 1500 },
+  { n: 4, title: 'FH Student', anchor: 'functioning in applied first-year Analysis and lineare Algebra', minRating: 1700 },
+  { n: 5, title: 'Strong FH Student', anchor: 'top of the FH cohort — Passerelle-pass capable', minRating: 1950 },
+  { n: 6, title: 'ETH Student', anchor: 'surviving a math-weighted Basisjahr', minRating: 2150 },
+  { n: 7, title: 'Strong ETH Student', anchor: 'clearing the Basisprüfung with room to spare', minRating: 2300 },
+  { n: 8, title: 'Transcendent', anchor: 'beyond the ladder', minRating: 2400 },
 ];
 
 export function rankForRating(r: number): RankDef {
