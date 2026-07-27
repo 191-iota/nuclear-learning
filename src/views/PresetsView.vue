@@ -65,13 +65,6 @@ function resetPresetList(): void {
               </select>
             </div>
             <div class="field span-2">
-              <label>Feedback language</label>
-              <select v-model="settings.api.feedbackLang">
-                <option value="English">English</option>
-                <option value="German">German</option>
-              </select>
-            </div>
-            <div class="field span-2">
               <label>Max tokens</label>
               <input v-model.number="settings.api.maxTokens" type="number" min="256" step="256" />
             </div>
@@ -100,25 +93,8 @@ function resetPresetList(): void {
 
           <div class="eng-row">
             <div class="field span-2">
-              <label>Re-check after (strokes)</label>
-              <input v-model.number="settings.scan.minNewStrokes" type="number" min="1" step="1" />
-            </div>
-            <div class="field span-2">
-              <label>Idle flush (ms)</label>
-              <input v-model.number="settings.scan.idleFlushMs" type="number" min="1000" step="500" />
-            </div>
-            <div class="field span-2">
-              <label>Auto-clear (s, 0 = off)</label>
+              <label>Auto-clear after finish (s, 0 = off)</label>
               <input v-model.number="settings.scan.autoClearSec" type="number" min="0" step="1" />
-            </div>
-            <div class="field span-2">
-              <label>Correction grace (ms, 0 = off)</label>
-              <input
-                v-model.number="settings.scan.correctionGraceMs"
-                type="number"
-                min="0"
-                step="1000"
-              />
             </div>
           </div>
 
@@ -135,9 +111,9 @@ function resetPresetList(): void {
 
           <div class="row" style="margin-top: 0.8rem">
             <span class="muted" style="font-size: 0.72rem">
-              The solve model works each problem out once and the confirm model signs off a finished
-              answer; the cheap verify model checks every scan in between. Prices come from the
-              model, so the Usage cost is exact per scan.
+              The solve model reads the problem once ("Problem written") and also writes the hints;
+              the cheap model grades each Check press; the confirm model judges the Finish. Prices
+              come from the model, so the Usage cost is exact per request.
             </span>
             <span class="spacer" />
             <button class="ghost" @click="resetEngine">Reset engine</button>
@@ -150,7 +126,7 @@ function resetPresetList(): void {
         <summary>
           <span class="summary-label">{{ mode.label }}</span>
           <span class="summary-meta">
-            {{ mode.feedbackStyle }} · {{ (mode.debounceMs / 1000).toFixed(mode.debounceMs % 1000 ? 1 : 0) }}s
+            {{ mode.feedbackStyle }}
           </span>
         </summary>
         <div class="config-body">
@@ -164,10 +140,6 @@ function resetPresetList(): void {
               <select v-model="mode.feedbackStyle">
                 <option v-for="s in STYLES" :key="s" :value="s">{{ s }}</option>
               </select>
-            </div>
-            <div class="field">
-              <label>Debounce (ms)</label>
-              <input v-model.number="mode.debounceMs" type="number" min="300" step="100" />
             </div>
           </div>
 

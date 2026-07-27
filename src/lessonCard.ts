@@ -1,5 +1,4 @@
 import { cleanText, createCompletion } from '@/api';
-import { settings } from '@/stores/settings';
 import { recordUsage } from '@/stores/usage';
 
 /**
@@ -38,7 +37,7 @@ Return JSON {front, back}.
 
 "back" — the correct result, plus a one-line reason; you may name what they had wrong.
 
-One slip per card — never bundle sub-parts a, b, c. Write ALL mathematics in LaTeX between single $ delimiters. Keep each side to one or two short lines. Write the card in the SAME language as the flagged error and correction below.
+One slip per card — never bundle sub-parts a, b, c. Write ALL mathematics in LaTeX between single $ delimiters. Keep each side to one or two short lines. Write the card in German (Swiss Hochdeutsch, use "ss" not "ß"), even when the problem or the flagged error below is in another language — mathematics stays LaTeX, prose becomes German.
 
 GOOD (shape, not language): front "Simplify $\\frac{1}{x-y}-\\frac{1}{y-x}$ — what sign does the second term take?"  back "$+\\frac{1}{x-y}$, giving $\\frac{2}{x-y}$, because $\\frac{1}{y-x}=-\\frac{1}{x-y}$ (the sign was flipped)."
 GOOD: front "Write the pure-repeating decimal $0.\\overline{145}$ as a fraction."  back "$\\frac{145}{999}$ — three nines, because the period is three digits."
@@ -57,8 +56,6 @@ export async function generateLessonCard(
   input: LessonCardInput,
 ): Promise<{ front: string; back: string } | null> {
   try {
-    const german = settings.api.feedbackLang === 'German';
-    const lang = german ? '\n\nWrite the card in German (Swiss Hochdeutsch, use "ss" not "ß").' : '';
     const user = [
       `Problem: ${input.problem || '(unlabelled)'}`,
       input.solution ? `Worked solution:\n${input.solution}` : '',
@@ -78,7 +75,7 @@ export async function generateLessonCard(
         max_completion_tokens: 8000,
         reasoning_effort: 'high',
         messages: [
-          { role: 'system', content: SYSTEM + lang },
+          { role: 'system', content: SYSTEM },
           { role: 'user', content: user },
         ],
         response_format: { type: 'json_schema', json_schema: { name: 'flashcard', strict: true, schema: CARD_SCHEMA } },

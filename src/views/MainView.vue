@@ -39,7 +39,44 @@ const feedback = useFeedback();
 
 const lastFeedback = ref('');
 const status = ref('');
-const requesting = ref(false);
+// The statement as the capture pass read it, rendered in the panel as an editable
+// read-back: a misread given is caught by a glance right after "Problem written" and
+// fixed by hand — confirming the edit re-solves against the corrected text, which
+// then outranks the ink. Doing nothing accepts the read-back as the statement of
+// record. No edit, no dialog, nothing blocks: the optional correction is the whole
+// safety net against a misread digit.
+const readStatement = ref('');
+const editingStatement = ref(false);
+const statementDraft = ref('');
+
+function onEditStatement(): void {
+  statementDraft.value = readStatement.value;
+  editingStatement.value = true;
+}
+
+function onCancelStatement(): void {
+  editingStatement.value = false;
+}
+
+// Re-solve against the corrected text. The old reference survives a failed re-solve
+// (empty or unusable reply), so a bad edit cannot destroy a working page.
+function onConfirmStatement(): void {
+  const text = statementDraft.value.trim();
+  if (!text) return;
+  editingStatement.value = false;
+  void runButton('Solving the corrected statement…', async (img, stale) => {
+    const r = await feedback.solveProblem(img, activeMode.value, text);
+    if (stale()) return;
+    if (r.captured) {
+      readStatement.value = r.statement ?? text;
+      lastFeedback.value = `Problem captured from your correction: ${r.problem || '(unlabeled)'}${partsSuffix(r.parts)}`;
+    } else {
+      lastFeedback.value = r.ungraded
+        ? UNUSABLE_MSG
+        : 'Could not solve the corrected statement. Is it complete?';
+    }
+  });
+}
 
 // Auto-clear after a correct answer: once a problem is marked CORRECT, a short
 // countdown clears the pad for the next problem unless you keep it (or write more).
@@ -169,28 +206,17 @@ function startAutoClear() {
   }, 1000);
 }
 
-// Orchestration state for sequential, coherent scans.
-let dirty = false; // new strokes since the last completed scan
-let pendingAgain = false; // strokes arrived while a scan was in flight
-let debounceTimer: number | undefined;
-let generation = 0; // bumped on clear / mode change to discard stale in-flight scans
-// Change-gating: how many strokes existed at the last scan, plus an idle-flush
-// timer so a small final increment is still checked once the pen goes idle.
-let strokesAtLastScan = 0;
-let flushTimer: number | undefined;
-let flushing = false;
-// One automatic re-scan after a failed request, so a transient network blip at the
-// final mark doesn't leave the finished answer silently ungraded until more ink lands.
-let retriedAfterError = false;
-// Correction grace: the FIRST sighting of a new correction on a page still mid-work is
-// held silently — on screen but not spoken — so a slip the learner is about to catch
-// themselves is never read to them. It is delivered once it survives the next scan
-// (they wrote on and it still stands) or once the pen has sat idle for
-// correctionGraceMs (they are stuck, and now the hint helps instead of interrupting).
-// CORRECT, anything on a final-marked page, and grace 0 skip the hold entirely.
-let heldVerdict: string | null = null;
-let holdTimer: number | undefined;
-let lastInkAt = 0;
+// Button-driven orchestration: nothing scans automatically anymore. One request in
+// flight at a time (busy gates every button), a generation counter discards results
+// that land after a Clear or preset switch, and inkPresent keeps the buttons off an
+// empty pad.
+const busy = ref(false);
+const inkPresent = ref(false);
+let generation = 0; // bumped on clear / mode change to discard stale in-flight requests
+// Stroke count at the last successful hint: an unchanged count at the next press means
+// "still stuck at the same state", which is what advances the hint ladder one level.
+// Strokes, not time — thinking long never escalates by itself.
+let strokesAtLastHint = -1;
 
 // Physical-page identity from the pen's ncode dots. Flipping to a new paper page is a
 // new problem: without this the new page's ink lands ON TOP of the old page's on the
@@ -227,221 +253,144 @@ function onDot(dot: PenDot) {
   if (dot.dotType === DOT_HOVER) return;
   // Writing again means you want to keep this page, call off any pending clear.
   if (autoClearLeft.value > 0) cancelAutoClear();
-  dirty = true;
-  retriedAfterError = false; // new ink is its own retry
-  lastInkAt = Date.now();
-  // New ink makes a held correction stale (the page changed under it): stop its timer,
-  // but keep the sentence as the second-sighting key so the next scan can decide.
-  if (holdTimer) {
-    window.clearTimeout(holdTimer);
-    holdTimer = undefined;
-  }
-  // Active writing resumed, cancel any pending idle flush.
-  flushing = false;
-  if (flushTimer) {
-    window.clearTimeout(flushTimer);
-    flushTimer = undefined;
-  }
-  scheduleFeedback();
+  inkPresent.value = true;
 }
 
 const pen = usePen({ onDot });
 
-function scheduleFeedback() {
-  if (debounceTimer) window.clearTimeout(debounceTimer);
-  debounceTimer = window.setTimeout(runFeedback, activeMode.value.debounceMs);
+const NO_PROBLEM_MSG =
+  'Could not determine the problem statement. Is it fully on the page? Press again once it is.';
+const UNUSABLE_MSG = 'The model reply was unusable. Press the button again.';
+// check/hint/finish auto-capture when no reference exists yet; when that happened
+// their result carries the read-back, and the panel must show it like a normal capture.
+function absorbStatement(r: { statement?: string }): void {
+  if (r.statement) readStatement.value = r.statement;
 }
 
-// After the debounce fires with too little new ink, wait out the REST of the idle
-// window and then scan anyway, so a finished answer is never skipped just because the
-// last addition was small. idleFlushMs is measured from the last stroke: the debounce
-// already consumed debounceMs of idle before this is scheduled, so only the residual
-// is waited here — a final mark (two underline strokes) reaches its verdict about
-// idleFlushMs after the pen lifts, not debounce + flush stacked in series.
-function scheduleFlush() {
-  if (flushTimer) window.clearTimeout(flushTimer);
-  const residual = Math.max(500, settings.scan.idleFlushMs - activeMode.value.debounceMs);
-  flushTimer = window.setTimeout(() => {
-    flushTimer = undefined;
-    flushing = true;
-    runFeedback();
-  }, residual);
+function partsSuffix(parts?: { total: number; answered: number }): string {
+  return parts && parts.total > 1
+    ? ` · ${Math.min(parts.answered, parts.total)} of ${parts.total} answered`
+    : '';
 }
 
-function clearHold() {
-  if (holdTimer) {
-    window.clearTimeout(holdTimer);
-    holdTimer = undefined;
-  }
-  heldVerdict = null;
-}
-
-// Matches useFeedback's audio-dedup identity, so "same sentence" means the same thing
-// on both sides of the hold.
-function sameVerdict(a: string, b: string): boolean {
-  const norm = (t: string) => t.trim().replace(/\s+/g, ' ').toLowerCase();
-  return norm(a) === norm(b);
-}
-
-// Arm (or re-arm) the grace timer for the current hold. The grace runs from the last
-// stroke, and the debounce plus the request already consumed part of it, so only the
-// residual is waited. Every scan CONCLUSION that leaves a hold pending with no newer
-// ink must land here (or replace/resolve the hold), or the held correction has no
-// liveness: a timer-less hold is only ever delivered by the next scan.
-function armHoldTimer(): void {
-  if (heldVerdict === null) return;
-  if (holdTimer) window.clearTimeout(holdTimer);
-  holdTimer = window.setTimeout(() => {
-    holdTimer = undefined;
-    // A fresher page state is already on its way to a verdict; defer to its conclusion.
-    if (dirty || requesting.value) return;
-    const held = heldVerdict;
-    heldVerdict = null;
-    if (held) feedback.deliver(held, activeMode.value);
-  }, Math.max(1000, settings.scan.correctionGraceMs - (Date.now() - lastInkAt)));
-}
-
-// Delivery policy in front of feedback.deliver. A graded OK resolves any held
-// correction — the learner fixed the slip before ever hearing about it, which is the
-// outcome the hold exists for. An UNGRADED OK (unusable model reply) says nothing
-// about the page, so it must not rescind the hold as if the slip were fixed; and since
-// it ends the scan chain without a throw (no automatic retry), the hold gets its grace
-// timer back — silence-until-new-ink would strand a stuck learner.
-function deliverVerdict(text: string, final: boolean, ungraded: boolean): void {
-  if (feedback.isQuiet(text)) {
-    if (!ungraded) clearHold();
-    else if (!dirty) armHoldTimer();
-    return;
-  }
-  const graceMs = settings.scan.correctionGraceMs;
-  if (feedback.isCorrect(text) || final || graceMs <= 0 || feedback.alreadyDelivered(text)) {
-    clearHold();
-    feedback.deliver(text, activeMode.value);
-    return;
-  }
-  if (heldVerdict !== null && sameVerdict(heldVerdict, text)) {
-    // Second sighting: the error survived a whole further write-and-pause cycle
-    // without the learner catching it, so a teacher would interject now.
-    clearHold();
-    feedback.deliver(text, activeMode.value);
-    return;
-  }
-  // First sighting of a new correction mid-work: hold it.
-  heldVerdict = text;
-  if (holdTimer) {
-    window.clearTimeout(holdTimer);
-    holdTimer = undefined;
-  }
-  // Ink that landed while this scan was in flight postdates the image this verdict was
-  // computed from — the ink could not cancel a timer that did not exist yet, and it may
-  // BE the fix for this very sentence. The queued rescan is the authority: hold without
-  // a timer and let its verdict decide (a graded OK clears, a repeat is the second
-  // sighting). Arming here would race the rescan and could speak a correction for a
-  // slip already struck through.
-  if (dirty) return;
-  armHoldTimer();
-}
-
-async function runFeedback() {
-  if (!canvas.hasContent() || !dirty) return;
-  if (requesting.value) {
-    pendingAgain = true; // serialise: re-run after the current scan finishes
-    return;
-  }
-  // Gate on how much new ink arrived since the last scan. Below the threshold we
-  // wait for more (batching mid-writing scans), unless this is an idle flush. A
-  // finished answer is substantial ink, so it always trips the threshold; and the
-  // flush covers the case where the learner stops after a small final tweak.
-  const newStrokes = canvas.strokeCount() - strokesAtLastScan;
-  if (newStrokes <= 0) return;
-  if (newStrokes < settings.scan.minNewStrokes && !flushing) {
-    scheduleFlush();
-    return;
-  }
-  flushing = false;
-  if (flushTimer) {
-    window.clearTimeout(flushTimer);
-    flushTimer = undefined;
-  }
-  requesting.value = true;
-  dirty = false;
-  const strokesBeforeScan = strokesAtLastScan;
-  strokesAtLastScan = canvas.strokeCount();
+// Every button shares one skeleton: refuse while a request is in flight or the pad is
+// empty, snapshot the image, run, and drop the outcome if the page was cleared or the
+// preset switched meanwhile (stale()). Errors surface in the status line and the same
+// press is simply pressed again — no automatic retry loop to reason about.
+async function runButton(
+  label: string,
+  op: (img: string, stale: () => boolean) => Promise<void>,
+): Promise<void> {
+  if (busy.value || !canvas.hasContent()) return;
+  busy.value = true;
   const gen = generation;
-  status.value = 'Checking…';
+  const stale = () => gen !== generation;
+  status.value = label;
   try {
-    const img = canvas.exportImage();
-    // A scan whose trigger was under the stroke gate arrived via the idle flush: a few
-    // strokes then stillness, the shape of a final mark. The model gets told, so it
-    // checks beneath the results before staying quiet.
-    const smallBatch = newStrokes < settings.scan.minNewStrokes;
-    const { verdict: text, final, ungraded, display } = await feedback.getFeedback(
-      img,
-      activeMode.value,
-      smallBatch,
-    );
-    if (gen !== generation) {
-      status.value = ''; // a reset happened mid-flight, drop this result
-      return;
-    }
-    retriedAfterError = false;
-    if (import.meta.env.DEV) {
-      console.debug('[nuclear-math] verdict:', JSON.stringify(text), final ? '(final page)' : '');
-    }
-    feedback.recordVerdict(text);
-    deliverVerdict(text, final, ungraded === true);
-    if (feedback.isQuiet(text)) {
-      // Distinguish "no solution cached yet" (the solve isn't producing one) from a real "looks
-      // fine so far" — otherwise both read identically and a failing solve looks like a pass.
-      lastFeedback.value = feedback.hasSolution()
-        ? 'Looks good so far…'
-        : 'Working out the solution…';
-    } else {
-      // Always reflect the CURRENT scan's verdict on screen — a glance is opt-in, so even a
-      // held correction shows here while the audio waits out its grace — and never let a
-      // resolved or changed error linger as stale text carried over from an earlier scan.
-      // The screen gets the display twin (notation, KaTeX-rendered), the audio keeps the
-      // spoken form; a CORRECT stays the plain confirmation.
-      lastFeedback.value =
-        !feedback.isCorrect(text) && display ? display : feedback.describe(text, activeMode.value);
-    }
+    await op(canvas.exportImage(), stale);
     status.value = '';
-    // Correct → offer to auto-advance to the next problem; any other verdict (a fresh error
-    // after a correct one) calls off a pending clear. CORRECT only fires once every visible
-    // part carries a marked final result (FINAL MARK rule), so it is a completion worth clearing.
-    // Never start the countdown when new ink already arrived mid-flight: those strokes are
-    // the next problem (or more work), and the timer would wipe them at zero.
-    if (feedback.isCorrect(text) && !dirty && !pendingAgain) startAutoClear();
-    else if (!feedback.isQuiet(text)) cancelAutoClear();
   } catch (err: any) {
-    if (gen !== generation) {
-      status.value = '';
+    status.value = stale() ? '' : (err?.message ?? 'Error contacting OpenAI.');
+  } finally {
+    busy.value = false;
+  }
+}
+
+// "Problem written": build the reference. A partly solved page is fine (the model
+// reads only the statement); an undeterminable statement reports itself and keeps any
+// earlier reference; a re-press re-reads the whole statement (that is how "I added
+// part c)" is handled).
+function onProblemWritten(): void {
+  void runButton('Reading the problem…', async (img, stale) => {
+    const r = await feedback.solveProblem(img, activeMode.value);
+    if (stale()) return;
+    if (r.captured) {
+      readStatement.value = r.statement ?? '';
+      lastFeedback.value = `Problem captured: ${r.problem || '(unlabeled)'}${partsSuffix(r.parts)}. Check the read-back on the right; the pencil fixes a misread.`;
+    } else {
+      lastFeedback.value = r.ungraded ? UNUSABLE_MSG : NO_PROBLEM_MSG;
+    }
+  });
+}
+
+// "Check": a pressed check always answers out loud — correct-so-far is spoken, not
+// implied by silence — and a still-standing error repeats verbatim (forced through
+// the audio dedup) because the press is an explicit ask.
+function onCheck(): void {
+  void runButton('Checking…', async (img, stale) => {
+    const r = await feedback.checkWork(img, activeMode.value);
+    if (stale()) return;
+    absorbStatement(r);
+    if (r.noProblem) {
+      lastFeedback.value = NO_PROBLEM_MSG;
       return;
     }
-    status.value = err?.message ?? 'Error contacting OpenAI.';
-    // Re-arm ONE automatic retry for the ink this scan failed to grade; repeated
-    // failures then wait for new ink rather than polling a dead API forever.
-    if (!retriedAfterError) {
-      retriedAfterError = true;
-      dirty = true;
-      strokesAtLastScan = strokesBeforeScan;
-      scheduleFeedback();
-    } else if (!dirty) {
-      // The retry is spent and nothing further is queued: a timer-less hold would sit
-      // silent forever while the learner waits stuck. Give it its grace timer back.
-      armHoldTimer();
+    if (r.ungraded) {
+      lastFeedback.value = UNUSABLE_MSG;
+      return;
     }
-  } finally {
-    requesting.value = false;
-    // Drain queued work if any arrived. This must NOT be gated on the finishing
-    // request's generation: a reset (Clear / mode switch) bumps `generation` and
-    // queues new-generation work, and the rescheduled run re-reads `generation`
-    // and re-checks the canvas, so it always targets the current page/mode.
-    if (pendingAgain || dirty) {
-      pendingAgain = false;
-      scheduleFeedback();
+    if (feedback.isQuiet(r.verdict)) {
+      const line = 'Bis hier stimmt alles.';
+      const style = activeMode.value.feedbackStyle;
+      if (style === 'spoken' || style === 'both') feedback.speak(line);
+      else feedback.playChime(true);
+      lastFeedback.value = line + partsSuffix(r.parts);
+      return;
     }
-  }
+    feedback.deliver(r.verdict, activeMode.value, true);
+    lastFeedback.value = r.display || r.verdict;
+    cancelAutoClear();
+  });
+}
+
+// "Hint": the stuck signal. The ladder level is driven by the stroke count — pressing
+// again without new ink goes one level deeper; the counter only advances on a hint
+// that actually arrived, so a failed request cannot eat a ladder level.
+function onHint(): void {
+  void runButton('Thinking about a hint…', async (img, stale) => {
+    const unchanged = canvas.strokeCount() === strokesAtLastHint;
+    const r = await feedback.getHint(img, activeMode.value, unchanged);
+    if (stale()) return;
+    absorbStatement(r);
+    if (r.noProblem) {
+      lastFeedback.value = NO_PROBLEM_MSG;
+      return;
+    }
+    if (r.ungraded || !r.hint) {
+      lastFeedback.value = 'No hint came back. Press again.';
+      return;
+    }
+    strokesAtLastHint = canvas.strokeCount();
+    feedback.deliver(r.hint, activeMode.value, true, false);
+    lastFeedback.value = r.display || r.hint;
+  });
+}
+
+// "Finish": the declared end of the page. CORRECT starts the auto-clear countdown
+// (cancellable, and writing cancels it); anything else names the first blocker and
+// calls a pending countdown off.
+function onFinish(): void {
+  void runButton('Final check…', async (img, stale) => {
+    const r = await feedback.finishCheck(img, activeMode.value);
+    if (stale()) return;
+    absorbStatement(r);
+    if (r.noProblem) {
+      lastFeedback.value = NO_PROBLEM_MSG;
+      return;
+    }
+    if (r.ungraded) {
+      lastFeedback.value = UNUSABLE_MSG;
+      return;
+    }
+    feedback.deliver(r.verdict, activeMode.value, true);
+    if (feedback.isCorrect(r.verdict)) {
+      lastFeedback.value = feedback.describe(r.verdict, activeMode.value);
+      startAutoClear();
+    } else {
+      lastFeedback.value = r.display || r.verdict;
+      cancelAutoClear();
+    }
+  });
 }
 
 async function connect() {
@@ -454,29 +403,21 @@ async function connect() {
   }
 }
 
-function resetGating() {
-  if (flushTimer) window.clearTimeout(flushTimer);
-  flushTimer = undefined;
-  flushing = false;
-  strokesAtLastScan = 0;
-}
-
 // The pinned problem survives automatic page turnovers (auto-clear, a physical page
 // flip): the learner may still be copying or solving it across pages, and wiping it
 // at the unrelated problem's CORRECT lost the card mid-intent. It dies only on the
 // manual Clear (wipePin), a mode switch, or its own close button.
 function startFreshPage(wipePin = false) {
   cancelAutoClear();
-  clearHold(); // a correction held for the old page must never speak onto the new one
-  generation += 1; // invalidate any in-flight scan
-  if (debounceTimer) window.clearTimeout(debounceTimer);
-  dirty = false;
-  pendingAgain = false;
-  resetGating();
+  generation += 1; // invalidate any in-flight request
   canvas.clear();
+  inkPresent.value = false;
+  strokesAtLastHint = -1;
   feedback.resetSession();
   lastFeedback.value = '';
   status.value = '';
+  readStatement.value = '';
+  editingStatement.value = false;
   if (wipePin) {
     drillRequest += 1;
     pinned.value = '';
@@ -484,21 +425,19 @@ function startFreshPage(wipePin = false) {
   pickNextUp();
 }
 
-// Switching mode is also a fresh start for feedback context (keep the drawing).
+// Switching mode is a fresh start for feedback context (the drawing stays; press a
+// button to evaluate it under the new preset — nothing runs by itself).
 watch(selectedModeId, () => {
   cancelAutoClear();
-  clearHold();
   generation += 1;
-  resetGating(); // re-evaluate the existing drawing under the new mode
+  strokesAtLastHint = -1;
   feedback.resetSession();
   lastFeedback.value = '';
   status.value = '';
+  readStatement.value = '';
+  editingStatement.value = false;
   drillRequest += 1;
   pinned.value = '';
-  if (canvas.hasContent()) {
-    dirty = true;
-    scheduleFeedback();
-  }
 });
 
 let resizeObserver: ResizeObserver | undefined;
@@ -529,9 +468,6 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   window.removeEventListener('resize', scheduleCanvasResize);
   if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
-  if (debounceTimer) window.clearTimeout(debounceTimer);
-  if (flushTimer) window.clearTimeout(flushTimer);
-  if (holdTimer) window.clearTimeout(holdTimer);
   cancelAutoClear();
 });
 
@@ -560,6 +496,41 @@ const connectionLabel = computed(() => {
       </span>
     </header>
 
+    <!-- The four moves of a page, in order. Nothing runs on its own: you say when the
+         problem is on the page, when to check, when you are stuck, and when you are done. -->
+    <div class="actionbar">
+      <button
+        :disabled="busy || !inkPresent"
+        title="The statement is on the page. Read it and work out the reference solution."
+        @click="onProblemWritten"
+      >
+        Problem written
+      </button>
+      <button
+        :disabled="busy || !inkPresent"
+        title="Is the work so far correct?"
+        @click="onCheck"
+      >
+        Check
+      </button>
+      <button
+        :disabled="busy || !inkPresent"
+        title="I am stuck. What theory applies next?"
+        @click="onHint"
+      >
+        Hint
+      </button>
+      <button
+        class="finish"
+        :disabled="busy || !inkPresent"
+        title="I declare the page done. Judge it."
+        @click="onFinish"
+      >
+        Finish
+      </button>
+      <span v-if="busy" class="workline" role="status">{{ status || 'Working…' }}</span>
+    </div>
+
     <main class="stage">
       <div ref="padwrapRef" class="padwrap">
         <canvas ref="canvasRef" class="pad" role="img" aria-label="Live pen strokes" />
@@ -583,7 +554,35 @@ const connectionLabel = computed(() => {
         <section class="p-sec">
           <div class="p-label">Feedback</div>
           <div class="p-body" role="status" aria-live="polite">
-            <MathText :text="status || lastFeedback || 'Write on the pad. Feedback appears here.'" />
+            <MathText :text="status || lastFeedback || 'Write on the pad, then use the buttons above.'" />
+          </div>
+        </section>
+        <!-- The capture's read-back: what the model believes the statement says.
+             Editable — fix a misread digit here and confirm; untouched, it stands as
+             the statement of record that all grading trusts over the ink. -->
+        <section v-if="readStatement" class="p-sec">
+          <div class="p-label">
+            <span>Statement (as read)</span>
+            <button
+              v-if="!editingStatement"
+              class="p-x"
+              aria-label="Edit the statement"
+              title="Fix a misread symbol"
+              :disabled="busy"
+              @click="onEditStatement"
+            >
+              ✎
+            </button>
+          </div>
+          <div v-if="!editingStatement" class="p-body"><MathText :text="readStatement" /></div>
+          <div v-else>
+            <textarea v-model="statementDraft" class="stmt-edit" rows="4" :disabled="busy" />
+            <div class="stmt-actions">
+              <button :disabled="busy || !statementDraft.trim()" @click="onConfirmStatement">
+                Solve with this
+              </button>
+              <button class="ghost" :disabled="busy" @click="onCancelStatement">Cancel</button>
+            </div>
           </div>
         </section>
         <section v-if="pinned" class="p-sec">
@@ -637,6 +636,38 @@ const connectionLabel = computed(() => {
 
 .spacer {
   flex: 1;
+}
+
+.actionbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.actionbar .finish {
+  border-color: var(--gold);
+}
+
+.workline {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.stmt-edit {
+  width: 100%;
+  resize: vertical;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.stmt-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.45rem;
 }
 
 .conn {

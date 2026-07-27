@@ -11,8 +11,12 @@ export type Settings = typeof defaults;
 
 // Bumped when the shipped defaults change in a way that must override a stale saved copy
 // (new fields, model swaps). A bump drops the old localStorage and re-seeds from
-// config/settings.json on next load.
-const KEY = 'nl.settings.v20';
+// config/settings.json on next load. (v23: the scan loop is gone — minNewStrokes,
+// idleFlushMs, and correctionGraceMs left with it; only autoClearSec remains of the
+// scan section, and checks now run on button press. Solve/hint/confirm move to
+// gpt-5.6-terra, which bills exactly what gpt-5.4 does today; the check stays on
+// gpt-5.4-mini, the cheapest capable tier.)
+const KEY = 'nl.settings.v23';
 
 function load(): Settings {
   const base = structuredClone(defaults) as Settings;

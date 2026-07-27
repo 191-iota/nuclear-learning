@@ -7,15 +7,21 @@ import defaultModes from '@config/modes.json';
  * presets are persisted to localStorage. The Presets view mutates this directly;
  * MainView reads it reactively so prompt / debounce / effort changes apply live.
  */
-// Bumped when the shipped modes change in a way a stale saved copy must not shadow (v16:
-// the first hint becomes a bare FLAG — error class + shortest locus, a few words the
-// learner chases themselves; the constraint arrives at level 2, the ladder is four
-// rungs. VOICE turns TERSE (shortest sentence, shortest unambiguous pointer, never the
-// learner's expression recited back), and the verdict gains "display" — its screen twin
-// with the mathematics as $-LaTeX, because the spoken form was unreadable as text). A bump drops
-// the old localStorage and re-seeds from
-// config/modes.json on next load, so new behaviour actually reaches an existing browser.
-const KEY = 'nl.modes.v16';
+// Bumped when the shipped modes change in a way a stale saved copy must not shadow
+// (v18: the scan loop is gone — the page is judged ON DEMAND via four buttons. The
+// prompt now names the four requests (capture / check / hint / finish), CORRECT is
+// reserved for the finish request, ink marks lose all protocol meaning, the
+// simplification remark moves to the finish check, and a STUCK HINTS section drives
+// the hint button's next-step ladder. debounceMs left the Mode shape with the loop.)
+// A bump drops the old localStorage and re-seeds from config/modes.json on next load,
+// so new behaviour actually reaches an existing browser. (v20: the capture's
+// read-back ("statement") is the learner-editable statement of record — accepted by
+// silence, corrected by hand, and authoritative over the statement ink on every
+// grading request; grading requests report the sub-questions they confirmed
+// ("cleared", locked against re-flagging), and ambiguous two-way symbols are rewrite
+// requests instead of errors. The v19 auto-reread guard is gone: the learner's edit
+// is the misread recovery.)
+const KEY = 'nl.modes.v20';
 // The prompt version, exported so the observation ledger can stamp each event with the
 // rater that produced it: a 1900 graded under v14 and a 1900 under v16 are different
 // scales, and that drift is only diagnosable if the events say who judged them.
