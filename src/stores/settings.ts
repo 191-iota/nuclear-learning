@@ -16,7 +16,7 @@ export type Settings = typeof defaults;
 // scan section, and checks now run on button press. Solve/hint/confirm move to
 // gpt-5.6-terra, which bills exactly what gpt-5.4 does today; the check stays on
 // gpt-5.4-mini, the cheapest capable tier.)
-const KEY = 'nl.settings.v24';
+const KEY = 'nl.settings.v25';
 
 function load(): Settings {
   const base = structuredClone(defaults) as Settings;

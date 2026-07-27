@@ -67,7 +67,7 @@ export function useCanvas(canvasRef: Ref<HTMLCanvasElement | null>) {
     // so far. `pressureMultiplier` is then the width at full pressure.
     const f = typeof d.f === 'number' && d.f > 0 ? d.f : 0;
     const norm = maxForce > 0 ? Math.min(1, f / maxForce) : 0.5;
-    return Math.min(6, Math.max(0.7, norm * settings.canvas.pressureMultiplier));
+    return Math.min(6, Math.max(0.5, norm * settings.canvas.pressureMultiplier));
   }
 
   function redraw() {
