@@ -1,7 +1,7 @@
 {
   "canvas": {
     "strokeColor": "#1a1a1a",
-    "pressureMultiplier": 2.0,
+    "pressureMultiplier": 0.8,
     "backgroundColor": "#ffffff",
     "maxScale": 14
   },
