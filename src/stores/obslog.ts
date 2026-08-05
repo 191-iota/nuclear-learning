@@ -18,7 +18,7 @@ import { MODES_KEY } from '@/stores/modes';
  * same localStorage as the state it protects, so export is the actual backup.
  */
 
-export type ObsEventType = 'packet' | 'review' | 'capture';
+export type ObsEventType = 'packet' | 'perf' | 'review' | 'capture';
 
 export interface ObsEvent {
   t: number; // ms epoch

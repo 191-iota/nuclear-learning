@@ -228,6 +228,36 @@ label {
   color: var(--muted);
 }
 
+/* The top-level mode switch: Math (the pad world) | Notes (notebook + chat). */
+.modeswitch {
+  display: flex;
+  gap: 0.15rem;
+  padding: 0.15rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  flex: none;
+}
+
+.mode-btn {
+  border: 0;
+  background: none;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  padding: 0.28rem 0.75rem;
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.mode-btn:hover:not(.active) {
+  color: var(--ink);
+}
+
+.mode-btn.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
 .tabs {
   display: flex;
   gap: 0.35rem;
@@ -265,44 +295,8 @@ label {
 
 .brand,
 .tabs,
-.rankchip,
 .theme {
   flex: none;
-}
-
-/* The held rank, always visible in the nav; click-through to Progress. */
-.rankchip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.28rem 0.6rem 0.28rem 0.32rem;
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  color: var(--ink);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-}
-
-.rankchip:hover {
-  border-color: var(--gold);
-}
-
-.rankchip-n {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.15rem;
-  height: 1.15rem;
-  border: 1.5px solid var(--gold);
-  border-radius: 50%;
-  color: var(--gold);
-  font-size: 0.62rem;
-}
-
-.rankchip-r {
-  color: var(--gold);
-  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 800px) {
@@ -311,8 +305,7 @@ label {
     padding-inline: 0.65rem;
   }
 
-  .brand-wordmark,
-  .rankchip-t {
+  .brand-wordmark {
     display: none;
   }
 

@@ -20,8 +20,16 @@ import defaultModes from '@config/modes.json';
 // grading request; grading requests report the sub-questions they confirmed
 // ("cleared", locked against re-flagging), and ambiguous two-way symbols are rewrite
 // requests instead of errors. The v19 auto-reread guard is gone: the learner's edit
-// is the misread recovery.)
-const KEY = 'nl.modes.v20';
+// is the misread recovery.) (v21: stuck hints pivot from technique recital to the
+// NEXT CONSTRAINT — the condition the next step must satisfy, bound to the problem's
+// objects; a bare definition is banned at every rung. A pressed hint counts as the
+// stuck signal, so a blocking error's ladder escalates on the press instead of
+// repeating the check's sentence verbatim. An ASK request joins the list: a typed
+// question about the page, answered in its own smaller JSON shape.) (v22: no more
+// deflecting to "printed solutions" — the tablet workflow has none. The error
+// ladder's level 3 hands over the corrected step plus the line it feeds, and the
+// voice example that legitimized the deflection is gone.)
+const KEY = 'nl.modes.v22';
 // The prompt version, exported so the observation ledger can stamp each event with the
 // rater that produced it: a 1900 graded under v14 and a 1900 under v16 are different
 // scales, and that drift is only diagnosable if the events say who judged them.

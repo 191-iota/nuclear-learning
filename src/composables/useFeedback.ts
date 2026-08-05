@@ -3,14 +3,31 @@ import { settings } from '@/stores/settings';
 import { mathToSpeech } from '@/mathSpeech';
 import type { Mode } from '@/types';
 import { recordUsage, newPage, type Role } from '@/stores/usage';
-import { addLesson } from '@/stores/lessons';
+import { addLesson, deckSummary } from '@/stores/lessons';
 import { modelInfo } from '@/models';
-import { applySkillPacket, noteSolved, type SkillPacket, type KCObservation } from '@/stores/skills';
+import {
+  applySkillPacket,
+  noteSolved,
+  type SkillPacket,
+  type KCObservation,
+} from '@/stores/skills';
 import { logEvent } from '@/stores/obslog';
 import { KC_IDS, SKILL_ASSESSOR } from '@/kc';
-import { generateLessonCard } from '@/lessonCard';
+import { generateAskCard, generateLessonCard } from '@/lessonCard';
 
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+
+// A note attached to an ask request: already-transcribed text plus where it lives.
+// Deliberately structural (no import from the notes store): the feedback layer only
+// needs the text.
+export interface AskNoteBlock {
+  title: string;
+  path: string;
+  text: string;
+  // The learner's own context dump for the note (assignment background, source),
+  // written by hand and never machine-edited; rendered beside the transcript.
+  context?: string;
+}
 
 // Structured reply for every button request: a learner-facing one-line `verdict`
 // (or hint sentence) plus the worked `solution` (internal, cached) and a `problem`
@@ -98,6 +115,32 @@ const SKILL_SOLUTION_SCHEMA = {
   },
 };
 
+// A typed question is answered in its own, smaller shape: the spoken answer plus its
+// screen twin. No verdict, no solution, no skill fields — asking is conversation about
+// the route, not a grading pass, and nothing from it may latch into the page's caches.
+// `reveals` is the learning signal the question itself carries: the asking is where a
+// gap (a rule not firmly held) or an expansion (an adjacent technique worth practicing)
+// shows itself, and a capture-worthy one becomes a review card in the lesson deck —
+// never rating signal, so asking stays safe.
+const ASK_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['answer', 'display', 'reveals'],
+  properties: {
+    answer: { type: 'string' },
+    display: { type: 'string' },
+    reveals: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'what'],
+      properties: {
+        kind: { type: 'string', enum: ['none', 'gap', 'expansion'] },
+        what: { type: 'string' },
+      },
+    },
+  },
+};
+
 let audioCtx: AudioContext | null = null;
 const missingChimes = new Set<string>();
 
@@ -126,6 +169,10 @@ const GERMAN_GRADING =
  *   finishCheck   "finish":           the learner declares the page done; CORRECT or the
  *                                     first blocker.
  *
+ * Beside the buttons, askQuestion answers a typed free-form question about the page
+ * with the same grounding, in its own reply shape; it records nothing a grading
+ * request would ever see.
+ *
  * Cohesion across the presses of one page is a session memory of the distinct verdicts
  * (and, separately, hints) given so far; each request carries them as context so the
  * model stays consistent (never re-flags a fixed line, repeats a still-unresolved error
@@ -146,6 +193,9 @@ export function useFeedback() {
   // and carry their own ladder position.
   const history: string[] = [];
   const hints: string[] = [];
+  // Typed questions with their answers, oldest first: context for follow-up asks
+  // only, never fed to grading requests — a question is not a verdict.
+  const asks: { q: string; a: string }[] = [];
   // The statement as the capture pass read it (shown to the learner for misread
   // catching), and the sub-questions already confirmed correct by a grading request —
   // keyed by a normalized label so "a)" and "a" collide, valued with the raw label the
@@ -283,6 +333,59 @@ export function useFeedback() {
     });
   }
 
+  // Ask-derived capture: when the ask reply judged the question capture-worthy, one
+  // background call curates it into the deck. The writer distills the THEORY behind
+  // the question, checks the existing cards for coverage, and only genuinely new
+  // knowledge lands — as a card written on the rule itself, never on the question's
+  // wording. Fire-and-forget like the mistake cards (the spoken answer never waits
+  // on it), inputs snapshotted by the caller. No fallback card on a failed or
+  // covered write: a verbatim question is not a card.
+  async function buildAskLesson(input: {
+    modeId: string;
+    modeLabel: string;
+    problem: string;
+    question: string;
+    answer: string;
+    what: string;
+    kind: 'gap' | 'expansion';
+    solution: string;
+  }): Promise<void> {
+    const card = await generateAskCard({
+      problem: input.problem,
+      question: input.question,
+      answer: input.answer,
+      what: input.what,
+      kind: input.kind,
+      solution: input.solution,
+      mode: input.modeId,
+      deck: deckSummary(),
+    });
+    if (!card || card.covered || !card.front) {
+      logEvent('capture', {
+        label: input.problem,
+        ask: true,
+        kind: input.kind,
+        outcome: card ? 'covered' : 'failed',
+      });
+      return;
+    }
+    addLesson({
+      mode: input.modeId,
+      modeLabel: input.modeLabel,
+      problem: input.problem,
+      mistake: input.question,
+      solution: input.solution,
+      wrong: '',
+      right: '',
+      front: card.front,
+      back: card.back,
+      kind: input.kind === 'gap' ? 'ask-gap' : 'ask-expansion',
+      note: input.what,
+      gen: 2,
+    });
+    logEvent('capture', { label: input.problem, ask: true, kind: input.kind });
+  }
+
   async function buildAndAddLesson(input: {
     modeId: string;
     modeLabel: string;
@@ -370,9 +473,12 @@ export function useFeedback() {
   const CHECK_REQUEST =
     'This is a CHECK request: the learner asks whether the settled work so far is correct. Reply OK when every settled line is correct — even when the page looks complete, since completion is decided only by a FINISH request: never reply CORRECT to a check. Otherwise reply the ONE error sentence for the first diverging settled step, per the HINT LADDER and VOICE in your instructions.';
   const HINT_REQUEST =
-    'This is a HINT request: the learner pressed the stuck button and asks what to do next. Answer per the STUCK HINTS rules in your instructions: if a settled error blocks them, the hint is that error\'s ladder sentence at its next unused level; otherwise it addresses the NEXT step of the route, at the level the hint history below dictates. The hint is ONE sentence per VOICE — never OK, never CORRECT, never a bare "keep going". If the work is already complete and correct, say in German that the work looks complete and only the finish check remains.';
+    'This is a HINT request: the learner pressed the stuck button and asks what comes next. Answer per the STUCK HINTS rules in your instructions: if a settled error blocks them, the hint is that error\'s ladder sentence at its next unused level — the press itself is the stuck signal, so never repeat a sentence already given for that error; otherwise the hint names the NEXT CONSTRAINT of the route from the frontier, at the level the hint history below dictates — the condition the next step must satisfy, bound to this problem\'s objects, never a definition and never a re-grading of the work so far. The hint is ONE sentence per VOICE — never OK, never CORRECT, never a bare "keep going". If the work is already complete and correct, say in German that the work looks complete and only the finish check remains.';
   const FINISH_REQUEST =
     'This is a FINISH request: the learner declares the page done. Reply CORRECT exactly when every sub-question the statement asks has a settled answer matching the reference (ink marks are NOT required, and extra unasked work does not block) and every earlier flagged error is fixed or superseded. Otherwise reply ONE sentence naming the first blocker: the first unanswered sub-question (by its label or its asked-for quantity), or the first diverging settled step (per HINT LADDER, at the next unused level for that error), or an ILLEGIBILITY rewrite request when a symbol you need stays unreadable. Never reply a bare OK to a finish request — the learner is waiting for a decision.';
+
+  const ASK_REQUEST =
+    'This is an ASK request: the learner typed a question about the page in hand — it is quoted at the end of this message, and it may be hypothetical ("what if I ..."), clarifying, or exploratory. Before answering, READ THE INK: locate the learner\'s frontier (their last settled line) and the specific written work the question points at, and anchor the answer THERE — name or quote the short fragment of their ink it applies to, so the answer is visibly about THIS page and THIS attempt, never a generic explanation that would fit any textbook. Answer THAT question, grounded in the ink, the statement of record, the feedback already given, and the reference solution. For a hypothetical, state where the move leads and the constraint it satisfies or violates — the outcome plus the governing law, so the learner runs the rule themselves. No definitions or theorem recitals they could look up, no repeating what their ink already shows, no praise, no filler. Declarative statements per VOICE, up to SIX short sentences when the question needs them. The reference is yours to reveal: give exactly as much of it as the question asks for — a value, a step, or, when the question plainly asks for the remaining route or the final answer, that route compactly from THEIR frontier onward, final answer included when asked for. Never point the learner to printed solutions, a textbook, or any material outside this app: whatever resolution the question earns, it gets here, in the answer. A verdict on the work so far stays the check and finish buttons\' business: asked whether it is right, say that the check decides that, and answer what remains of the question. Whatever language the question is in, reply in German (Swiss Hochdeutsch, use "ss" not "ß"). Alongside the answer, judge in "reveals" what the QUESTION ITSELF says about the learner: kind "gap" when it shows a rule, constraint, or connection they do not firmly hold — they asked because their model of it is incomplete; kind "expansion" when it reaches for an adjacent technique, shortcut, or concept they would concretely benefit from practicing next; kind "none" otherwise — reading clarifications, logistics, tool questions, or a point the answer settles for good. Capture only what a review card or a small practice task would genuinely serve tomorrow; when both fit, gap wins. In "what", ONE short German line naming the underlying rule or technique itself, in textbook terms — never an echo or paraphrase of the question (empty for none); it seeds a later review card. Reply ONLY in this request\'s own JSON shape: "answer" = the spoken answer in plain speakable words (no LaTeX, and never the tokens OK or CORRECT); "display" = the same answer typeset for the side panel, every mathematical expression as $-LaTeX between single $ delimiters, at most eight short lines, one statement per line; "reveals" = the judgment above.';
 
   const CORRECTION_RULE =
     'CORRECTION (stored for the learner\'s later review, never spoken): if the earlier feedback below had flagged a mistake the learner has since FIXED, fill `correction.wrong` with the specific error they made and `correction.right` with the corrected version, each ONE short line, writing every mathematical expression in LaTeX between single $ delimiters (for example $\\overline{a\\cdot b}=\\bar a+\\bar b$) — whatever your verdict is. Naming the right answer here is fine and does not change your verdict. If there was no earlier mistake, or it is still unfixed, leave both empty.';
@@ -465,8 +571,67 @@ export function useFeedback() {
     return [...referenceLines(), HINT_REQUEST, '', RESPONSE_CONTRACT, '', GERMAN_GRADING, ...confirmedLines(false), ...historyLines(), ...hintLines(unchanged)].join('\n');
   }
 
+  // The finish judge also rates the page as one performance; the stuck-hints given
+  // are part of that evidence (help needed lowers the demonstrated level) and are
+  // otherwise invisible to finish requests, so they ride along here.
+  function hintEvidence(): string[] {
+    if (hints.length === 0) return [];
+    return [
+      '',
+      'Stuck-hints you gave on this page (oldest first), evidence for the performance judgment:',
+      hints.map((h, i) => `${i + 1}. ${h}`).join('\n'),
+    ];
+  }
+
   function finishContext(): string {
-    return [...referenceLines(), FINISH_REQUEST, CORRECTION_RULE, '', RESPONSE_CONTRACT, '', GERMAN_GRADING, ...confirmedLines(true), ...historyLines()].join('\n');
+    return [...referenceLines(), FINISH_REQUEST, CORRECTION_RULE, '', RESPONSE_CONTRACT, '', GERMAN_GRADING, ...confirmedLines(true), ...historyLines(), ...hintEvidence()].join('\n');
+  }
+
+  // The ask context reuses the page's grounding (statement of record, reference,
+  // feedback and hints already given) but none of the grading scaffolding: the reply
+  // shape has no verdict and no solution, so nothing can latch. Earlier asks ride
+  // along so follow-up questions compose. Attached notes arrive as TEXT (the notes
+  // store transcribes handwriting once, in the background), so referring to a whole
+  // folder costs a few hundred tokens, never a pile of images. (An ask with an EMPTY
+  // pad never lands here at all: MainView routes it to the general study assistant
+  // in ask.ts — the math persona owns pages, not the notebook.)
+  function askContext(question: string, notes?: AskNoteBlock[]): string {
+    const lines: string[] = [];
+    if (capturedStatement) {
+      lines.push(`The problem statement of record is: ${capturedStatement}`, '');
+    }
+    if (cachedSolution) {
+      lines.push(
+        'The correct solution to the current problem, your grounding, unseen by the learner:',
+        cachedSolution,
+        '',
+      );
+    }
+    lines.push(ASK_REQUEST);
+    if (notes?.length) {
+      lines.push(
+        '',
+        "The learner attached these notes of their own as context — transcripts of their handwritten or typed notes, chosen by them for this question. Treat them as the learner's material: draw on and reference them where they bear on the question, ignore what does not, and never grade them.",
+      );
+      notes.forEach((n, i) => {
+        lines.push('', `[Note ${i + 1}: "${n.title}" — folder: ${n.path}]`);
+        if (n.context) lines.push(`Learner's own context for this note: ${n.context}`);
+        if (n.text) lines.push(n.text);
+        else lines.push('[This note has NO transcript — only the context above exists.]');
+      });
+      lines.push('', '[End of attached notes]');
+    }
+    if (history.length) {
+      lines.push('', 'Feedback you already gave on this page (oldest first):', history.map((h, i) => `${i + 1}. ${h}`).join('\n'));
+    }
+    if (hints.length) {
+      lines.push('', 'Hints you already gave on this page (oldest first):', hints.map((h, i) => `${i + 1}. ${h}`).join('\n'));
+    }
+    if (asks.length) {
+      lines.push('', 'Questions the learner already asked on this page, with your answers (oldest first):', asks.map((x, i) => `${i + 1}. Q: ${x.q} A: ${x.a}`).join('\n'));
+    }
+    lines.push('', `The learner's question: ${question}`);
+    return lines.join('\n');
   }
 
   // One structured call to a given model. Models that don't take the effort
@@ -793,6 +958,102 @@ export function useFeedback() {
   }
 
   /**
+   * "Ask": a typed question about the page in hand.
+   *
+   * Invariants: the answer is conversation, never a verdict — nothing latches into
+   * the solution cache, the verdict history, or the hint ladder, and no skill signal
+   * is deposited. Grounded like a grading request (page image, statement of record,
+   * reference, prior feedback), plus the page's own Q&A trail so follow-ups compose.
+   * Auto-captures like check/hint when no reference exists yet, so asking first
+   * costs one extra call instead of a refusal. Attached notes ride along as compact
+   * transcript text. The question itself is learning signal: when the reply judges
+   * it capture-worthy (a gap, or an expansion worth practicing), a background card
+   * call folds it into the lesson deck — the deck is the only thing an ask ever
+   * writes, so asking stays safe. `revealed` reports the captured line so the panel
+   * can say so.
+   */
+  async function askQuestion(
+    imageDataUrl: string,
+    mode: Mode,
+    question: string,
+    attachedNotes?: AskNoteBlock[],
+  ): Promise<{
+    answer: string;
+    display: string;
+    revealed?: string;
+    ungraded?: boolean;
+    noProblem?: boolean;
+    statement?: string;
+  }> {
+    const s = session;
+    const hadReference = cachedSolution !== '';
+    const ready = await ensureSolution(imageDataUrl, mode);
+    if (s !== session) return { answer: '', display: '' };
+    if (!ready.ok) return { answer: '', display: '', ungraded: ready.ungraded, noProblem: !ready.ungraded };
+    const { data, mediaType } = decodeImage(imageDataUrl);
+    const content: unknown[] = [
+      { type: 'text', text: askContext(question, attachedNotes) },
+      { type: 'image_url', image_url: { url: `data:${mediaType};base64,${data}` } },
+    ];
+    const model = settings.api.solveModel;
+    const params: any = {
+      model,
+      max_completion_tokens: settings.api.maxTokens,
+      messages: [
+        { role: 'system', content: mode.systemPrompt },
+        { role: 'user', content },
+      ],
+      response_format: { type: 'json_schema', json_schema: { name: 'ask', strict: true, schema: ASK_SCHEMA } },
+    };
+    if (modelInfo(model).effort) params.reasoning_effort = 'medium';
+    const resp = await createCompletion(params);
+    logUsage(resp, mode, model, 'ask');
+    if (s !== session) return { answer: '', display: '' };
+    const out = (resp.choices?.[0]?.message?.content ?? '').trim();
+    let answer = '';
+    let display = '';
+    let revealKind: 'gap' | 'expansion' | null = null;
+    let revealWhat = '';
+    try {
+      const parsed = JSON.parse(out);
+      answer = cleanText(parsed.answer).trim();
+      display = cleanText(parsed.display).trim();
+      // Best-effort like the skill tags: a malformed judgment can never block the answer.
+      const rv = parsed?.reveals;
+      if (rv && (rv.kind === 'gap' || rv.kind === 'expansion')) {
+        revealKind = rv.kind;
+        revealWhat = cleanText(rv.what).trim();
+      }
+    } catch {
+      console.warn(
+        `[nuclear-math] ask reply unusable (finish_reason=${resp.choices?.[0]?.finish_reason}, ${out.length} chars); nothing to show. If 'length', raise Max tokens.`,
+      );
+      return { answer: '', display: '', ungraded: true };
+    }
+    if (!answer) return { answer: '', display: '', ungraded: true };
+    asks.push({ q: question, a: answer });
+    if (asks.length > 4) asks.shift(); // enough context for follow-ups, bounded re-send
+    if (revealKind && revealWhat) {
+      void buildAskLesson({
+        modeId: mode.id,
+        modeLabel: mode.label,
+        problem: cachedProblem,
+        question,
+        answer,
+        what: revealWhat,
+        kind: revealKind,
+        solution: cachedSolution,
+      });
+    }
+    return {
+      answer,
+      display,
+      revealed: revealKind ? revealWhat : undefined,
+      statement: hadReference ? undefined : capturedStatement,
+    };
+  }
+
+  /**
    * "Finish": the learner declares the page done.
    *
    * Invariants: CORRECT requires every sub-question answered and right — ink marks
@@ -1016,6 +1277,7 @@ export function useFeedback() {
     }
     history.length = 0;
     hints.length = 0;
+    asks.length = 0;
     spokenKeys.clear();
     cachedSolution = '';
     cachedProblem = '';
@@ -1043,6 +1305,13 @@ export function useFeedback() {
     return cachedSolution !== '';
   }
 
+  // What the archive stores about the current page: the label, the statement of
+  // record, and the reference. Read-only snapshot; archiving must never mutate the
+  // session (and a Clear right after archiving must not reach into the snapshot).
+  function pageSnapshot(): { problem: string; statement: string; solution: string } {
+    return { problem: cachedProblem, statement: capturedStatement, solution: cachedSolution };
+  }
+
   // Console probe: type __nlState() in DevTools to see whether the current problem has a cached
   // solution and what it is, so a non-caching solve is provable rather than guessed at.
   if (typeof window !== 'undefined') {
@@ -1058,6 +1327,7 @@ export function useFeedback() {
     solveProblem,
     checkWork,
     getHint,
+    askQuestion,
     finishCheck,
     deliver,
     describe,
@@ -1067,5 +1337,6 @@ export function useFeedback() {
     isCorrect,
     isQuiet,
     hasSolution,
+    pageSnapshot,
   };
 }

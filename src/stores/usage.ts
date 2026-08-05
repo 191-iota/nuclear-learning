@@ -11,7 +11,7 @@ import { modelInfo, type ModelInfo } from '@/models';
  *
  * Console access:  __nlUsage.summary() · __nlUsage.records() · __nlUsage.clear()
  */
-export type Role = 'solve' | 'verify' | 'confirm' | 'hint' | 'lesson' | 'drill';
+export type Role = 'solve' | 'verify' | 'confirm' | 'hint' | 'ask' | 'lesson' | 'drill' | 'index' | 'note';
 
 // Human labels for the per-purpose breakdown.
 export const ROLE_LABEL: Record<Role, string> = {
@@ -19,8 +19,11 @@ export const ROLE_LABEL: Record<Role, string> = {
   verify: 'Check',
   confirm: 'Finish',
   hint: 'Hints',
+  ask: 'Questions',
   lesson: 'Lesson cards',
   drill: 'Drill problems',
+  index: 'Archive index',
+  note: 'Note transcripts',
 };
 
 export interface UsageRecord {

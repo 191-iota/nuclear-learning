@@ -17,13 +17,105 @@ function escapeHtml(s: string): string {
   );
 }
 
-function renderTex(tex: string, display: boolean): string {
+function tryKatex(tex: string, display: boolean): string | null {
   try {
-    return katex.renderToString(tex, { displayMode: display, throwOnError: false, output: 'html' });
+    // strict:'ignore' keeps legitimate-but-fussy input alive (umlauts inside math
+    // mode, unicode minus); throwOnError:true so a real parse failure reaches the
+    // repair pass below instead of KaTeX printing red source text into the panel.
+    return katex.renderToString(tex, {
+      displayMode: display,
+      throwOnError: true,
+      output: 'html',
+      strict: 'ignore',
+    });
   } catch {
-    const d = display ? '$$' : '$';
-    return escapeHtml(d + tex + d);
+    return null;
   }
+}
+
+// Model output is not always valid KaTeX. The repairs below cover the recurring
+// breakages seen in live replies; each is meaning-preserving, and anything still
+// broken after them falls back to readable literal source instead of red garble.
+const UNICODE_TEX: [RegExp, string][] = [
+  [/×/g, '\\times '],
+  [/÷/g, '\\div '],
+  [/−|–|—/g, '-'],
+  [/±/g, '\\pm '],
+  [/∓/g, '\\mp '],
+  [/≤/g, '\\le '],
+  [/≥/g, '\\ge '],
+  [/≠/g, '\\ne '],
+  [/≈/g, '\\approx '],
+  [/√/g, '\\sqrt '],
+  [/∞/g, '\\infty '],
+  [/→/g, '\\to '],
+  [/⇒/g, '\\Rightarrow '],
+  [/⇔/g, '\\Leftrightarrow '],
+  [/°/g, '^{\\circ}'],
+  [/²/g, '^{2}'],
+  [/³/g, '^{3}'],
+  [/¹/g, '^{1}'],
+  [/½/g, '\\tfrac{1}{2}'],
+  [/∈/g, '\\in '],
+  [/∪/g, '\\cup '],
+  [/∩/g, '\\cap '],
+  [/∅/g, '\\emptyset '],
+  [/ℝ/g, '\\mathbb{R}'],
+  [/ℕ/g, '\\mathbb{N}'],
+  [/ℤ/g, '\\mathbb{Z}'],
+  [/ℚ/g, '\\mathbb{Q}'],
+  [/…/g, '\\dots '],
+  [/·/g, '\\cdot '],
+  [/ /g, ' '],
+];
+
+function sanitizeTex(tex: string): string {
+  let t = tex;
+  // A bare % starts a TeX comment and silently eats the rest of the formula
+  // ("steigt um 20%" renders as "steigt um 20"). Models mean the percent sign.
+  t = t.replace(/(^|[^\\])%/g, '$1\\%');
+  for (const [re, sub] of UNICODE_TEX) t = t.replace(re, sub);
+  // align/align*/gather/eqnarray need the display-math wrapper KaTeX refuses to
+  // fake; aligned is the drop-in that works in both modes.
+  t = t.replace(/\\begin\{(align\*?|gather\*?|eqnarray\*?)\}/g, '\\begin{aligned}')
+    .replace(/\\end\{(align\*?|gather\*?|eqnarray\*?)\}/g, '\\end{aligned}');
+  // Unbalanced \left / \right (a truncated reply, usually) is fatal to the whole
+  // formula; stripping the pair markers keeps the delimiters themselves visible.
+  const lefts = (t.match(/\\left(?![a-zA-Z])/g) ?? []).length;
+  const rights = (t.match(/\\right(?![a-zA-Z])/g) ?? []).length;
+  if (lefts !== rights) {
+    t = t.replace(/\\left(?![a-zA-Z])\s*/g, '').replace(/\\right(?![a-zA-Z])\s*/g, '');
+  }
+  // Missing closing braces (truncation again): append them; surplus closers are
+  // left for the fallback, prepending an opener would change the meaning.
+  let depth = 0;
+  for (let i = 0; i < t.length; i += 1) {
+    const ch = t[i];
+    if (ch === '\\') {
+      i += 1;
+      continue;
+    }
+    if (ch === '{') depth += 1;
+    else if (ch === '}' && depth > 0) depth -= 1;
+  }
+  if (depth > 0) t += '}'.repeat(depth);
+  // A lone trailing backslash is always a truncation artifact.
+  t = t.replace(/\\$/, '');
+  return t;
+}
+
+function renderTex(tex: string, display: boolean): string {
+  const direct = tryKatex(tex, display);
+  if (direct !== null) return direct;
+  const repaired = sanitizeTex(tex);
+  if (repaired !== tex) {
+    const second = tryKatex(repaired, display);
+    if (second !== null) return second;
+  }
+  // Both attempts failed: show the source legibly (monospace, quietly styled by
+  // MathText) rather than KaTeX's red inline error soup.
+  const d = display ? '$$' : '$';
+  return `<code class="tex-fallback">${escapeHtml(d + tex + d)}</code>`;
 }
 
 // ---- bare-TeX promotion: undelimited fragments the model forgot to wrap ----
@@ -116,13 +208,16 @@ function promote(text: string): string {
   return out;
 }
 
-export function renderMath(input: string): string {
-  if (!input) return '';
-  let out = '';
+// ---- shared math segmentation ----
+
+type MathSeg = { kind: 'text'; text: string } | { kind: 'math'; tex: string; display: boolean };
+
+function splitMath(input: string): MathSeg[] {
+  const segs: MathSeg[] = [];
   let plain = '';
   const flush = () => {
     if (plain) {
-      out += promote(plain);
+      segs.push({ kind: 'text', text: plain });
       plain = '';
     }
   };
@@ -160,7 +255,7 @@ export function renderMath(input: string): string {
         break;
       }
       flush();
-      out += renderTex(input.slice(i + 2, close), display);
+      segs.push({ kind: 'math', tex: input.slice(i + 2, close), display });
       i = close + 2;
       continue;
     }
@@ -195,7 +290,7 @@ export function renderMath(input: string): string {
         break;
       }
       flush();
-      out += renderTex(input.slice(start, close), display);
+      segs.push({ kind: 'math', tex: input.slice(start, close), display });
       i = close + delim.length;
       continue;
     }
@@ -209,5 +304,253 @@ export function renderMath(input: string): string {
     i = k;
   }
   flush();
+  return segs;
+}
+
+export function renderMath(input: string): string {
+  if (!input) return '';
+  return splitMath(input)
+    .map((s) => (s.kind === 'math' ? renderTex(s.tex, s.display) : promote(s.text)))
+    .join('');
+}
+
+// ---- rich rendering: full markdown on top of the math pipeline ----
+//
+// Chat replies render as study material: headings, lists, tables, code, quotes,
+// links, emphasis, with LaTeX live everywhere prose is. The safety model is the
+// one renderMath has: the only injected HTML is KaTeX output and the fixed set of
+// md-* wrappers built right here; every piece of prose passes through escaping.
+// Block elements swallow the newlines they consume, so the pre-wrap containers the
+// output lands in do not double-space around lists and headings.
+
+const LIST_RE = /^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/;
+
+function isTableSep(line: string): boolean {
+  return /^\s*\|?(\s*:?-{2,}:?\s*\|)+\s*:?-{2,}:?\s*\|?\s*$/.test(line);
+}
+
+function splitRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|')) s = s.slice(0, -1);
+  return s.split('|').map((c) => c.trim());
+}
+
+// Emphasis inside one prose run: *italic* pairs stay within a text segment.
+function italicRun(text: string): string {
+  const parts = text.split(/(?<![\w*])\*([^\s*](?:[^*\n]*?[^\s*])?)\*(?![\w*])/g);
+  let html = '';
+  for (let i = 0; i < parts.length; i += 1) {
+    html += i % 2 === 1 ? `<em>${promote(parts[i])}</em>` : promote(parts[i]);
+  }
+  return html;
+}
+
+// [label](https://...) links; only http(s) targets, everything escaped.
+function linkRun(text: string): string {
+  const parts = text.split(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g);
+  let html = '';
+  for (let i = 0; i < parts.length; i += 3) {
+    html += italicRun(parts[i] ?? '');
+    if (i + 2 < parts.length) {
+      html += `<a class="md-a" href="${escapeHtml(parts[i + 2])}" target="_blank" rel="noopener noreferrer">${italicRun(parts[i + 1])}</a>`;
+    }
+  }
+  return html;
+}
+
+// One line of prose+math. Inline code is lifted out first (its content is
+// literal), then math is segmented, then **bold** toggles ACROSS segments (models
+// bold across formulas: "**wichtig: $x=2$**"), italic and links resolve within
+// each text segment, and promote() escapes whatever remains.
+function renderInline(line: string): string {
+  // NUL sentinels cannot collide with content: cleanText strips \x00 from every
+  // model reply before it reaches a store.
+  const codes: string[] = [];
+  const src = line.replace(/`([^`\n]+)`/g, (_, c: string) => {
+    codes.push(`<code class="md-c">${escapeHtml(c)}</code>`);
+    return `\u0000${codes.length - 1}\u0000`;
+  });
+  let html = '';
+  let bold = false;
+  for (const seg of splitMath(src)) {
+    if (seg.kind === 'math') {
+      html += renderTex(seg.tex, seg.display);
+      continue;
+    }
+    const parts = seg.text.split('**');
+    for (let i = 0; i < parts.length; i += 1) {
+      if (i > 0) {
+        bold = !bold;
+        html += bold ? '<strong>' : '</strong>';
+      }
+      html += linkRun(parts[i]);
+    }
+  }
+  if (bold) html += '</strong>';
+  return html.replace(/\u0000(\d+)\u0000/g, (_, i: string) => codes[Number(i)] ?? '');
+}
+
+// A $$ block spread over several lines becomes one line before block parsing, so
+// the line-based renderer still hands KaTeX the whole formula. (Inside a code
+// fence a stray $$ could mis-join lines; code fences carrying display-math
+// delimiters have not appeared in practice.)
+function joinDisplayMath(lines: string[]): string[] {
+  const out: string[] = [];
+  let buf: string[] | null = null;
+  for (const line of lines) {
+    const odd = ((line.match(/\$\$/g) ?? []).length % 2) === 1;
+    if (buf === null) {
+      if (odd) buf = [line];
+      else out.push(line);
+    } else {
+      buf.push(line);
+      if (odd) {
+        out.push(buf.join(' '));
+        buf = null;
+      }
+    }
+  }
+  if (buf) out.push(...buf); // unclosed $$: keep the lines as they were
   return out;
+}
+
+interface ListItem {
+  indent: number;
+  ordered: boolean;
+  text: string;
+}
+
+// One nesting level: an item indented by 2+ spaces joins a sublist of the item
+// above it. Deeper indents clamp to that same level.
+function renderList(items: ListItem[]): string {
+  let html = '';
+  let top: string | null = null;
+  let sub: string | null = null;
+  let liOpen = false;
+  for (const it of items) {
+    const tag = it.ordered ? 'ol' : 'ul';
+    if (it.indent >= 2 && liOpen) {
+      if (sub && sub !== tag) {
+        html += `</${sub}>`;
+        sub = null;
+      }
+      if (!sub) {
+        html += `<${tag} class="md-l md-sub">`;
+        sub = tag;
+      }
+      html += `<li>${renderInline(it.text)}</li>`;
+      continue;
+    }
+    if (sub) {
+      html += `</${sub}>`;
+      sub = null;
+    }
+    if (liOpen) {
+      html += '</li>';
+      liOpen = false;
+    }
+    if (top !== tag) {
+      if (top) html += `</${top}>`;
+      html += `<${tag} class="md-l">`;
+      top = tag;
+    }
+    html += `<li>${renderInline(it.text)}`;
+    liOpen = true;
+  }
+  if (sub) html += `</${sub}>`;
+  if (liOpen) html += '</li>';
+  if (top) html += `</${top}>`;
+  return html;
+}
+
+export function renderRich(input: string): string {
+  if (!input) return '';
+  const lines = joinDisplayMath(input.split('\n'));
+  const out: string[] = [];
+  const para: string[] = [];
+  const flushPara = () => {
+    if (para.length) {
+      out.push(`<div class="md-p">${para.map(renderInline).join('\n')}</div>`);
+      para.length = 0;
+    }
+  };
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^\s*```/.test(line)) {
+      flushPara();
+      const buf: string[] = [];
+      i += 1;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) {
+        buf.push(lines[i]);
+        i += 1;
+      }
+      i += 1; // past the closing fence (or the end)
+      out.push(`<pre class="md-code"><code>${escapeHtml(buf.join('\n'))}</code></pre>`);
+      continue;
+    }
+    if (line.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      flushPara();
+      const th = splitRow(line)
+        .map((c) => `<th>${renderInline(c)}</th>`)
+        .join('');
+      i += 2;
+      let body = '';
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
+        body += `<tr>${splitRow(lines[i])
+          .map((c) => `<td>${renderInline(c)}</td>`)
+          .join('')}</tr>`;
+        i += 1;
+      }
+      out.push(
+        `<div class="md-tw"><table class="md-t"><thead><tr>${th}</tr></thead><tbody>${body}</tbody></table></div>`,
+      );
+      continue;
+    }
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
+      flushPara();
+      out.push('<hr class="md-hr">');
+      i += 1;
+      continue;
+    }
+    if (LIST_RE.test(line)) {
+      flushPara();
+      const items: ListItem[] = [];
+      while (i < lines.length) {
+        const m = LIST_RE.exec(lines[i]);
+        if (!m) break;
+        items.push({ indent: m[1].length, ordered: /^\d/.test(m[2]), text: m[3] });
+        i += 1;
+      }
+      out.push(renderList(items));
+      continue;
+    }
+    if (/^\s*>\s?/.test(line)) {
+      flushPara();
+      const buf: string[] = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*>\s?/, ''));
+        i += 1;
+      }
+      out.push(`<blockquote class="md-q">${buf.map(renderInline).join('\n')}</blockquote>`);
+      continue;
+    }
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) {
+      flushPara();
+      out.push(`<div class="md-h md-h${Math.min(4, h[1].length)}">${renderInline(h[2])}</div>`);
+      i += 1;
+      continue;
+    }
+    if (line.trim() === '') {
+      flushPara();
+      i += 1;
+      continue;
+    }
+    para.push(line);
+    i += 1;
+  }
+  flushPara();
+  return out.join('');
 }
