@@ -19,7 +19,7 @@
   <img src="https://img.shields.io/badge/Web%20Bluetooth-Chrome%20%2F%20Edge-1a1915?style=flat-square" alt="Web Bluetooth">
 </p>
 
-You write with a Neo Smartpen and the strokes stream into the browser over Web Bluetooth. A vision model reads the handwriting directly from the page image, so nothing gets typed and nothing gets photographed. Four buttons drive the loop: problem written, check, hint, finish. Every reply comes back spoken, in Swiss German.
+You write with a Neo Smartpen on paper, its strokes streaming into the browser over Web Bluetooth, or with a graphics tablet straight onto the page. Either way a vision model reads the handwriting directly from the page image, so nothing gets typed and nothing gets photographed. Four buttons drive the loop: problem written, check, hint, finish. An ask box sits beside them for typed questions about the page in hand ("what if I substitute here?"), answered from your own route. Every reply comes back spoken, in Swiss German. Beside the math pad lives a second mode: a notebook for school notes of any subject, with a persistent study chat grounded in them.
 
 <p align="center">
   <picture>
@@ -42,7 +42,7 @@ Hints climb a ladder, one rung per failed fix, the way a human tutor escalates. 
   </picture>
 </p>
 
-The same ladder serves when nothing is wrong and you are stuck: first the technique that applies next and where it attaches, then that technique bound to your numbers, then the next line itself. Pressing hint again without writing anything goes one level deeper; write something and the judgement starts fresh.
+The same ladder serves when nothing is wrong and you are stuck, and it climbs constraints: first the condition your next step must satisfy and where it attaches, then that condition written out with your numbers, then the next line itself. A definition on its own never counts as a hint. Pressing hint again without writing anything goes one level deeper; write something and the judgement starts fresh.
 
 The first rung carries no values from your page for a reason. In a randomized trial with about a thousand math students, an answer-revealing chatbot made exam scores worse than no help at all, while the same model behind a no-reveal guardrail helped.
 
@@ -54,9 +54,21 @@ Each button press evaluates the page exactly once, so a half-written line is nev
 
 A line struck through, or marked "falsch" with an arrow to the redo, is settled business and stays unflagged. Rewriting a solution from scratch supersedes the flagged attempt, so the newest version is what gets judged, and an intermediate result is left alone while you are still simplifying it. Done is declared with the finish button: the page only comes back correct when every question the statement asks has its answer, so a multi-part problem cannot pass with part b) still open.
 
+### Write on a tablet instead
+
+A graphics tablet is the second way in: pick Tablet as the input source and write straight onto the page, no pen hardware involved. Strokes live as objects in a fixed page space, so undo removes a whole stroke, the eraser lifts the strokes it touches, and zooming never changes how thick the ink sits on the page. Pressure barely moves the line; the width set in Presets is the width you get. The pen's lower barrel button is undo, and holding it (or Ctrl+Z) peels off stroke after stroke until you let go. A kariert grid lies under the ink on screen and stays out of every export, and the Full button fills the screen with the page so the tablet's active area maps onto it about 1:1.
+
+### A notebook, and a chat that has read it
+
+School notes of any subject live in Notes mode. Write them in ink in a full-pane editor, type them, or paste them: Cmd+V with a screenshot or photo on the clipboard files it as a note on the spot. Every image note is transcribed in the background by a small vision model into searchable text with $-LaTeX math, and every ink note can be reopened and continued later. Notes organize into nested folders with tags, pins, and full-text search; each carries a context field only you write, for the assignment or source it belongs to. The panes and the note window resize by drag and keep their size.
+
+The Chat tab beside it is a persistent study chat over that notebook. Conversations survive restarts, and each carries its own attachments: single notes or whole folder subtrees, resolved to transcripts at send time, so answers are grounded in what you actually wrote and name the note they draw on. Replies render as full markdown with live KaTeX: headings, lists, tables, code, and formulas inside all of them. The math grader on the pad and the study chat stay separate personas.
+
 ### Review cards from your own mistakes
 
 Every mistake you fix becomes a review card, built from your error and the worked solution already in hand, so what comes back on the spacing schedule is the actual fix. Corrected errors are the most memorable kind of correction, and they fade after about a week; the expanding schedule is what makes the fix permanent.
+
+The ask box feeds the same deck: a typed question is itself a signal about what you hold loosely. When a question reveals a rule you are unsure of, it comes back as a recall card on that rule; when it reaches for a technique adjacent to your route, it comes back as a small practice task on a fresh instance. Casual questions produce nothing. Cards are written on the underlying rule in textbook terms, and knowledge the deck already tests is not added twice.
 
 <p align="center">
   <picture>
@@ -65,18 +77,13 @@ Every mistake you fix becomes a review card, built from your error and the worke
   </picture>
 </p>
 
-### A rating built like chess
+### Weak spots over scores
 
-Every solved problem tags the skills behind it against a fixed map of 125 skills, from sign handling up through the chain rule and proof by induction. Each skill carries a rating that climbs on a clean solve, fades toward a guess as it goes stale, and stays provisional until enough problems have run through it. The Progress tab turns that into a recommendation (the weakest skill worth drilling, the strongest one going stale) and generates a practice problem for it on demand, pitched so you get it right about four times in five.
+Every page tags the skills behind it against a fixed map of 125 skills, from sign handling up through the chain rule and proof by induction. The Progress tab turns that into a weak-spot list with a drill button per skill: a generated practice problem pitched so you get it right about four times in five, plus a next-up suggestion for the session. There is deliberately no rating and no rank; the map steers practice and nothing else.
 
-The same data drives one number, chess-style: every problem is a rated game and its difficulty is the opponent's strength. 1600 means solid at the BM median, and each step of 400 is one stage of a ladder that runs from secondary school into degree mathematics. Grinding easy material cannot farm it: a win the rating already expected teaches it nothing, so climbing means beating problems at your level or above.
+### Everything survives the browser
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/progress-dark.png">
-    <img src="docs/progress-light.png" alt="the Progress tab: rank and rating with the rating curve, the gate to the next rank, and the weak spots list with a drill button per skill" width="880">
-  </picture>
-</p>
+All state mirrors to disk through the dev server: settings, decks, skills, notes, chats, and the images and ink behind them land in a local `data/` folder that git ignores. Clearing browser data loses nothing; the next start restores everything from disk.
 
 ### Cost you can see
 
@@ -91,22 +98,23 @@ The strong model carries solve, hints, and the finish; the cheap one carries the
 
 ## How it works
 
-The pen streams (x, y, pressure) points onto a canvas. On every button press the page is cropped to just the ink and sent to the OpenAI API as a vision message; the model reads the handwriting itself.
+The pen streams (x, y, pressure) points onto a canvas; the tablet draws into the same page space through pointer events. On every button press the page is cropped to just the ink and sent to the OpenAI API as a vision message; the model reads the handwriting itself.
 
 | Button | What happens | Model |
 |---|---|---|
 | Problem written | Reads the statement and solves it once, every sub-question of it; the answers become an internal checklist | GPT-5.6 Terra |
 | Check | Grades the settled work against the checklist | GPT-5.4 mini |
-| Hint | Names what the page needs next | GPT-5.6 Terra |
+| Hint | Names the next constraint your route must satisfy | GPT-5.6 Terra |
+| Ask (typed) | Answers a free question about the page, grounded in your work and the checklist | GPT-5.6 Terra |
 | Finish | Judges the declared-done page against the full checklist | GPT-5.6 Terra |
 
-Forgetting the first button costs nothing: any of the other three runs the capture pass itself when no checklist exists yet. The capture echoes the statement into the side panel, editable: fix a misread given by hand and it re-solves against your text, which from then on outranks the ink. Sub-questions a check has confirmed stay confirmed; later checks are barred from re-flagging approved work unless you visibly rework it.
+Forgetting the first button costs nothing: every other request, the ask box included, runs the capture pass itself when no checklist exists yet. The capture echoes the statement into the side panel, editable: fix a misread given by hand and it re-solves against your text, which from then on outranks the ink. Sub-questions a check has confirmed stay confirmed; later checks are barred from re-flagging approved work unless you visibly rework it.
 
 Grading follows school convention. A simplification task assumes its expressions are defined, so the tutor accepts the textbook answer without absolute-value bars, while a lost solution of an equation is always flagged. Everything is spoken as words ("x squared", "the square root of two") and the German voice keeps Swiss spelling.
 
 ## Presets
 
-The grader is one system prompt plus a few settings, edited live in the Presets tab or in `config/modes.json`. New presets clone the shipped math grader, so a variant starts from the tuned baseline with its conventions, hint ladder, and self-correction protocol. `feedbackStyle` is `"spoken"`, `"chime"`, or `"both"`. The engine settings live in `config/settings.json` and the same panel: models, effort, image quality, and the auto-clear after a finished page.
+The grader is one system prompt plus a few settings, edited live in the Presets tab or in `config/modes.json`. New presets clone the shipped math grader, so a variant starts from the tuned baseline with its conventions, hint ladder, and self-correction protocol. `feedbackStyle` is `"spoken"`, `"chime"`, or `"both"`. The engine settings live in `config/settings.json` and the same panel: models, effort, image quality, the auto-clear after a finished page, and the tablet ink (pen width, smoothing, grid, page aspect).
 
 ## Run it
 
@@ -118,7 +126,7 @@ cp .env.example .env   # then add your OpenAI API key
 npm run dev
 ```
 
-Open the printed URL, connect the pen, and write. Connecting is always the button; the app never grabs the pen on its own.
+Open the printed URL, connect the pen, and write. Connecting is always the button; the app never grabs the pen on its own. With a graphics tablet there is nothing to pair: choose Tablet as the input source at the top left and write.
 
 > [!NOTE]
 > Web Bluetooth is not in Safari or Firefox, and Brave ships with it off (enable it at `brave://flags/#brave-web-bluetooth-api`). Pairing works over `localhost` or `https`, and on macOS the browser needs Bluetooth permission.
@@ -134,6 +142,8 @@ Open the printed URL, connect the pen, and write. Connecting is always the butto
 | D1 refills (3-pack) | CHF 5 |
 | Ncode paper (print your own or buy a notebook) | CHF 0 to 16 |
 | Any BLE earbud (optional, for spoken feedback in your ear) | CHF 15 to 20 |
+
+Or skip the pen entirely: any graphics tablet the browser sees as a pointer works (developed against a Wacom One M), used from about CHF 30.
 
 ## License
 
