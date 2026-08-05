@@ -37,6 +37,14 @@ function load(): Settings {
   } catch {
     /* fall back to defaults */
   }
+  // The shipped pen width dropped from 2.4 to 1.7 to 1.2 (each step: still too
+  // thick in practice), and the scratch column was retired (the whole math page is
+  // graded now, default share 0.28 → 0). A saved copy of an OLD default follows the
+  // new one; a value the user picked by hand stays theirs.
+  if (base.tablet.baseWidth === 2.4 || base.tablet.baseWidth === 1.7) {
+    base.tablet.baseWidth = defaults.tablet.baseWidth;
+  }
+  if (base.tablet.scratchShare === 0.28) base.tablet.scratchShare = 0;
   return base;
 }
 

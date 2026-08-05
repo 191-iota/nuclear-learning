@@ -72,6 +72,25 @@ function resetPresetList(): void {
 
           <div class="eng-row">
             <div class="field span-2">
+              <label>Chat model (Notes mode)</label>
+              <select v-model="settings.api.chatModel">
+                <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
+              </select>
+            </div>
+            <div class="field span-2">
+              <label>Chat effort</label>
+              <select v-model="settings.api.chatEffort">
+                <option v-for="e in EFFORTS" :key="e" :value="e">{{ e }}</option>
+              </select>
+            </div>
+            <div class="field span-2">
+              <label>Page grid (0 = off)</label>
+              <input v-model.number="settings.tablet.gridSize" type="number" min="0" max="100" step="5" />
+            </div>
+          </div>
+
+          <div class="eng-row">
+            <div class="field span-2">
               <label>Image long edge (px)</label>
               <input v-model.number="settings.export.maxEdgePx" type="number" min="256" step="64" />
             </div>
@@ -96,9 +115,40 @@ function resetPresetList(): void {
               <label>Auto-clear after finish (s, 0 = off)</label>
               <input v-model.number="settings.scan.autoClearSec" type="number" min="0" step="1" />
             </div>
+            <div class="field span-2">
+              <label>Input source</label>
+              <select v-model="settings.input.source">
+                <option value="tablet">Tablet</option>
+                <option value="neo">Neo pen</option>
+              </select>
+            </div>
+            <div class="field span-2">
+              <label>Tablet aspect ratio</label>
+              <select v-model.number="settings.tablet.aspect">
+                <option :value="1.6">16:10 (most Wacom)</option>
+                <option :value="1.7778">16:9</option>
+                <option :value="1.5">3:2</option>
+                <option :value="1.3333">4:3</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="eng-row">
+            <div class="field span-2">
+              <label>Pen width ({{ settings.tablet.baseWidth }})</label>
+              <input v-model.number="settings.tablet.baseWidth" type="range" min="0.5" max="4" step="0.1" />
+            </div>
+            <div class="field span-2">
+              <label>Stroke smoothing ({{ Math.round(settings.tablet.smoothing * 100) }}%)</label>
+              <input v-model.number="settings.tablet.smoothing" type="range" min="0" max="0.7" step="0.05" />
+            </div>
           </div>
 
           <div class="row" style="margin-top: 0.8rem; flex-wrap: wrap; gap: 0.6rem 1rem">
+            <label class="toggle">
+              <input v-model="settings.ui.autoExpandFeedback" type="checkbox" />
+              Open hints &amp; answers in a large window
+            </label>
             <label class="toggle">
               <input v-model="settings.api.trackSkills" type="checkbox" />
               Track skill mastery (Progress tab)
