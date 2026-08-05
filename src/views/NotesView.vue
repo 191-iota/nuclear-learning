@@ -213,7 +213,9 @@ const inkOpen = ref(false);
 const inkCanvasRef = ref<HTMLCanvasElement | null>(null);
 const inkWrapRef = ref<HTMLDivElement | null>(null);
 // scratch:false — a general note has no "not graded" region, the whole page is the note.
-const ink = useTablet(inkCanvasRef, { scratch: false });
+// board:true — the writing surface is an unbounded whiteboard, not a sheet: a note
+// grows in every direction, zooms out to be seen whole, and pans like a Miro board.
+const ink = useTablet(inkCanvasRef, { scratch: false, board: true, probeName: '__nlInk' });
 const inkFolder = ref<string>(INBOX_ID);
 const inkSaving = ref(false);
 // Set while an EXISTING note's ink is loaded in the editor: Save writes back to it
@@ -358,6 +360,10 @@ function onKeys(e: KeyboardEvent): void {
       break;
     case 'e':
       ink.toggleEraser();
+      e.preventDefault();
+      break;
+    case 'h':
+      ink.toggleHand();
       e.preventDefault();
       break;
     case '+':
@@ -583,11 +589,11 @@ function fmtDate(ts: number): string {
         <canvas
           ref="inkCanvasRef"
           class="inkpad"
-          :class="{ erasing: ink.state.tool === 'eraser' }"
+          :class="{ erasing: ink.state.tool === 'eraser', grabbing: ink.state.tool === 'hand' }"
           aria-label="Note writing area"
         />
         <div class="tooldock" role="toolbar" aria-label="Ink tools">
-          <button :disabled="!ink.state.canUndo" title="Undo stroke (Z, or the pen's lower button)" @click="ink.undo()">Undo</button>
+          <button :disabled="!ink.state.canUndo" title="Undo stroke (Z, or the pen's lower button; hold to remove several)" @click="ink.undo()">Undo</button>
           <button :disabled="!ink.state.canRedo" title="Redo (Y)" @click="ink.redo()">Redo</button>
           <button
             :class="{ on: ink.state.tool === 'eraser' }"
@@ -596,10 +602,17 @@ function fmtDate(ts: number): string {
           >
             Eraser
           </button>
+          <button
+            :class="{ on: ink.state.tool === 'hand' }"
+            title="Move the board with the pen (H); holding space does the same while writing, as does dragging with the middle mouse button or scrolling"
+            @click="ink.toggleHand()"
+          >
+            Hand
+          </button>
           <span class="zoomlvl">{{ ink.state.zoomPct }}%</span>
-          <button title="Zoom out (-)" @click="ink.zoomBy(0.8)">−</button>
+          <button title="Zoom out (-): the board has no fixed size, so this keeps going" @click="ink.zoomBy(0.8)">−</button>
           <button title="Zoom in (+); ctrl+scroll zooms at the cursor" @click="ink.zoomBy(1.25)">+</button>
-          <button title="Fit the page (0)" @click="ink.resetView()">Fit</button>
+          <button title="Fit everything written (0)" @click="ink.resetView()">Fit</button>
           <button
             title="Fullscreen writing: the page fills the screen, so the tablet maps ~1:1 onto it (Esc leaves)"
             @click="toggleFullscreen"
@@ -1041,6 +1054,10 @@ function fmtDate(ts: number): string {
 
 .inkpad.erasing {
   cursor: cell;
+}
+
+.inkpad.grabbing {
+  cursor: grab;
 }
 
 .tooldock {

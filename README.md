@@ -62,6 +62,8 @@ A graphics tablet is the second way in: pick Tablet as the input source and writ
 
 School notes of any subject live in Notes mode. Write them in ink in a full-pane editor, type them, or paste them: Cmd+V with a screenshot or photo on the clipboard files it as a note on the spot. Every image note is transcribed in the background by a small vision model into searchable text with $-LaTeX math, and every ink note can be reopened and continued later. Notes organize into nested folders with tags, pins, and full-text search; each carries a context field only you write, for the assignment or source it belongs to. The panes and the note window resize by drag and keep their size.
 
+The writing surface itself is a board, not a sheet. A note grows in whatever direction you keep writing, with no edge to run into: scroll or drag to move around, zoom out to a twentieth to see a whole session at once, and press Fit to frame everything you have written. Only the ink is exported, cropped to what you drew, so a board that sprawls still transcribes as one clean image. The math pad stays a page, because there one page is one problem.
+
 The Chat tab beside it is a persistent study chat over that notebook. Conversations survive restarts, and each carries its own attachments: single notes or whole folder subtrees, resolved to transcripts at send time, so answers are grounded in what you actually wrote and name the note they draw on. Replies render as full markdown with live KaTeX: headings, lists, tables, code, and formulas inside all of them. The math grader on the pad and the study chat stay separate personas.
 
 ### Review cards from your own mistakes

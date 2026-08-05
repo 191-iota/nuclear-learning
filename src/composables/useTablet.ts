@@ -18,6 +18,13 @@ import { settings } from '@/stores/settings';
  * - The view can zoom and pan, but stroke width is defined in page units: ink
  *   written at any zoom has the same thickness ON THE PAGE, so a long derivation
  *   stays uniform.
+ * - Two surface shapes from the same engine (options.board). A PAGE is the fixed
+ *   sheet above, bounded, never zoomed out past fit — the math pad, where one page
+ *   is one problem. A BOARD is unbounded in every direction: ink goes anywhere,
+ *   the view zooms far out and pans past the ink, and the grid runs to the edges.
+ *   Notes are written on a board, because a topic does not end where a sheet does.
+ *   Coordinates are the same in both, so a note written on the old fixed page
+ *   reopens exactly where it was.
  * - A scratch column on the right takes side arithmetic. A stroke belongs to the
  *   zone it STARTS in, and exports include only main-zone ink, so abandoned scraps
  *   never reach the grader.
@@ -47,7 +54,7 @@ export interface TabletStroke {
 type Op = { kind: 'add'; stroke: TabletStroke } | { kind: 'erase'; strokes: TabletStroke[] };
 
 export interface TabletState {
-  tool: 'pen' | 'eraser';
+  tool: 'pen' | 'eraser' | 'hand'; // hand = drag the surface instead of writing on it
   zoomPct: number;
   canUndo: boolean;
   canRedo: boolean;
@@ -59,6 +66,12 @@ export interface UseTabletOptions {
   // false = a plain page with no scratch column (the notes editor: nothing on a
   // general note is "not graded", so the divider would only confuse).
   scratch?: boolean;
+  // true = an unbounded board instead of a fixed page (see the header note).
+  board?: boolean;
+  // Console probe name. Two surfaces exist at once (the math pad and the notes
+  // board), so they must not overwrite each other's probe: whichever mounted last
+  // would answer for both, and a pen problem would be diagnosed on the wrong one.
+  probeName?: string;
 }
 
 const PAGE_H = 1000;
@@ -69,6 +82,18 @@ const MAX_UNDO = 200;
 const EXPORT_MARGIN = 30; // page units around the ink, keeps superscripts off the edge
 const MIN_Z = 1;
 const MAX_Z = 8;
+// A board zooms out to a twentieth: a session's worth of notes fits on screen at
+// once, which is the whole point of not being a page.
+const BOARD_MIN_Z = 0.05;
+// How far past the ink a board may be panned: one page in every direction, so
+// there is always empty surface to start writing on, and never a void to get lost in.
+const BOARD_PAN_SLACK = PAGE_H;
+// Grid lines closer together than this on screen read as fog, so that pass is skipped.
+const GRID_MIN_PX = 5;
+// Ceiling on a board export's pixel count. A board can be far wider than a page,
+// and scaling its long edge down to the page cap would thin the ink below what the
+// transcriber can read — so board exports stay 1:1 in page units up to this budget.
+const BOARD_MAX_PX = 4_000_000;
 
 export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: UseTabletOptions = {}) {
   const strokes: TabletStroke[] = [];
@@ -113,7 +138,14 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     return c ? c.getContext('2d') : null;
   }
 
+  function minZ(): number {
+    return options.board ? BOARD_MIN_Z : MIN_Z;
+  }
+
   function fitScale(c: HTMLCanvasElement): number {
+    // Board: 100% means one page height fills the viewport, and the surface simply
+    // continues past the edges. Page: 100% means the whole sheet is visible.
+    if (options.board) return c.height / PAGE_H;
     return Math.min(c.width / pageW(), c.height / PAGE_H);
   }
 
@@ -126,9 +158,53 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     return { ox: c.width / 2 - view.cx * S, oy: c.height / 2 - view.cy * S };
   }
 
+  interface Box {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  }
+
+  // What the board actually holds: the ink and backdrop, unioned with one nominal
+  // page at the origin. Keeping that home sheet in the union means Fit never blows
+  // a single short stroke up to fill the screen, and the starting area stays findable.
+  function contentBox(): Box {
+    const b: Box = { minX: 0, minY: 0, maxX: pageW(), maxY: PAGE_H };
+    for (const s of strokes) {
+      if (s.minX < b.minX) b.minX = s.minX;
+      if (s.minY < b.minY) b.minY = s.minY;
+      if (s.maxX > b.maxX) b.maxX = s.maxX;
+      if (s.maxY > b.maxY) b.maxY = s.maxY;
+    }
+    if (backdropRect) {
+      b.minX = Math.min(b.minX, backdropRect.x);
+      b.minY = Math.min(b.minY, backdropRect.y);
+      b.maxX = Math.max(b.maxX, backdropRect.x + backdropRect.w);
+      b.maxY = Math.max(b.maxY, backdropRect.y + backdropRect.h);
+    }
+    return b;
+  }
+
+  // The slice of surface currently on screen, in page units.
+  function worldRect(c: HTMLCanvasElement): Box {
+    const S = scale(c);
+    const { ox, oy } = offsets(c);
+    return {
+      minX: -ox / S,
+      minY: -oy / S,
+      maxX: (c.width - ox) / S,
+      maxY: (c.height - oy) / S,
+    };
+  }
+
   function clampView(): void {
-    view.z = Math.min(MAX_Z, Math.max(MIN_Z, view.z));
-    if (view.z <= MIN_Z + 1e-6) {
+    view.z = Math.min(MAX_Z, Math.max(minZ(), view.z));
+    if (options.board) {
+      // Free panning, bounded only by the content plus a page of slack.
+      const b = contentBox();
+      view.cx = Math.min(b.maxX + BOARD_PAN_SLACK, Math.max(b.minX - BOARD_PAN_SLACK, view.cx));
+      view.cy = Math.min(b.maxY + BOARD_PAN_SLACK, Math.max(b.minY - BOARD_PAN_SLACK, view.cy));
+    } else if (view.z <= MIN_Z + 1e-6) {
       view.cx = pageW() / 2;
       view.cy = PAGE_H / 2;
     } else {
@@ -210,6 +286,24 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     return v || fallback;
   }
 
+  // One pass of grid lines across the visible surface. Skipped when the spacing
+  // would be too tight to read, which is what keeps a zoomed-out board clean.
+  function gridPass(ctx: CanvasRenderingContext2D, r: Box, step: number, alpha: number, S: number): void {
+    if (step <= 0 || step * S < GRID_MIN_PX) return;
+    ctx.strokeStyle = `rgba(100, 140, 180, ${alpha})`;
+    ctx.lineWidth = 1 / S; // one device pixel at any zoom
+    ctx.beginPath();
+    for (let x = Math.floor(r.minX / step) * step; x <= r.maxX; x += step) {
+      ctx.moveTo(x, r.minY);
+      ctx.lineTo(x, r.maxY);
+    }
+    for (let y = Math.floor(r.minY / step) * step; y <= r.maxY; y += step) {
+      ctx.moveTo(r.minX, y);
+      ctx.lineTo(r.maxX, y);
+    }
+    ctx.stroke();
+  }
+
   function redraw(): void {
     const ctx = context();
     const c = canvasRef.value;
@@ -219,6 +313,37 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     const W = pageW();
     const S = scale(c);
     const { ox, oy } = offsets(c);
+    const grid = Number(settings.tablet.gridSize) || 0;
+
+    if (options.board) {
+      // No sheet and no desk: the surface is the same paper everywhere, and the
+      // grid runs to all four edges so panning has visible landmarks.
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = settings.canvas.backgroundColor;
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.setTransform(S, 0, 0, S, ox, oy);
+      if (grid >= 10) {
+        ctx.save();
+        const r = worldRect(c);
+        gridPass(ctx, r, grid, 0.16, S);
+        // Every fifth line stays visible longer, so structure survives zooming out
+        // well past the point where the fine grid disappears.
+        gridPass(ctx, r, grid * 5, 0.22, S);
+        ctx.restore();
+      }
+      if (backdrop && backdropRect) {
+        ctx.drawImage(backdrop, backdropRect.x, backdropRect.y, backdropRect.w, backdropRect.h);
+      }
+      drawStrokes(ctx, strokes);
+      if (erasing && lastErase) {
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(177, 73, 47, 0.8)';
+        ctx.lineWidth = 1.2 / view.z;
+        ctx.arc(lastErase.x, lastErase.y, eraseRadius(), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      return;
+    }
 
     // Desk outside the page, then the white page itself.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -233,7 +358,6 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
 
     // The Raster: kariert-paper grid, screen-only (exports stay clean white so the
     // grader and note images never carry it). Hairline at any zoom.
-    const grid = Number(settings.tablet.gridSize) || 0;
     if (grid >= 10) {
       ctx.save();
       ctx.strokeStyle = 'rgba(100, 140, 180, 0.18)';
@@ -332,7 +456,9 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     return { x: (X - ox) / S, y: (Y - oy) / S, p: 0.5 };
   }
 
-  function clampToPage(pt: TabletPoint): TabletPoint {
+  // On a page, ink stops at the edge. On a board there is no edge to stop at.
+  function clampInk(pt: TabletPoint): TabletPoint {
+    if (options.board) return pt;
     pt.x = Math.min(pageW(), Math.max(0, pt.x));
     pt.y = Math.min(PAGE_H, Math.max(0, pt.y));
     return pt;
@@ -371,7 +497,7 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
   }
 
   function beginStroke(c: HTMLCanvasElement, e: PointerEvent): void {
-    const pt = clampToPage(toPage(c, e.clientX, e.clientY));
+    const pt = clampInk(toPage(c, e.clientX, e.clientY));
     pt.p = pressureOf(e);
     const zone: TabletZone = pt.x >= scratchX() ? 'scratch' : 'main';
     const stroke: TabletStroke = {
@@ -391,7 +517,7 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
   function appendPoint(c: HTMLCanvasElement, e: PointerEvent, raw = false): void {
     if (!active) return;
     const s = active.stroke;
-    const pt = clampToPage(toPage(c, e.clientX, e.clientY));
+    const pt = clampInk(toPage(c, e.clientX, e.clientY));
     const p = pressureOf(e);
     let x = pt.x;
     let y = pt.y;
@@ -444,8 +570,11 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
   // ---- eraser ----
 
   function eraseRadius(): number {
-    // Finer when zoomed in, so single symbols can be picked out of dense work.
-    return Math.min(9, Math.max(2.5, 9 / view.z));
+    // Finer when zoomed in, so single symbols can be picked out of dense work. On a
+    // board the cap is lifted: zoomed far out the ring must still cover something
+    // bigger than a hairline, or erasing an old region means zooming back in first.
+    const cap = options.board ? 60 : 9;
+    return Math.min(cap, Math.max(2.5, 9 / view.z));
   }
 
   function segDist2(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
@@ -534,6 +663,13 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     state.tool = state.tool === 'eraser' ? 'pen' : 'eraser';
   }
 
+  // The hand: on a board the pen has to be able to move the surface, not only write
+  // on it, and a tablet user has no middle mouse button. Holding space does the same
+  // thing without leaving the pen tool.
+  function toggleHand(): void {
+    state.tool = state.tool === 'hand' ? 'pen' : 'hand';
+  }
+
   // ---- zoom / pan ----
 
   function zoomAt(c: HTMLCanvasElement, canvasX: number, canvasY: number, factor: number): void {
@@ -541,7 +677,7 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     const S0 = scale(c);
     const px = (canvasX - offsets(c).ox) / S0;
     const py = (canvasY - offsets(c).oy) / S0;
-    view.z = Math.min(MAX_Z, Math.max(MIN_Z, view.z * factor));
+    view.z = Math.min(MAX_Z, Math.max(minZ(), view.z * factor));
     const S1 = scale(c);
     // Keep the page point under the cursor stationary.
     view.cx = px - (canvasX - c.width / 2) / S1;
@@ -556,10 +692,25 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     zoomAt(c, c.width / 2, c.height / 2, factor);
   }
 
+  // Page: back to the whole sheet at 100%. Board: fit everything written, which is
+  // the only way to find ink you panned away from — and it never zooms IN past 100%,
+  // so a nearly empty board does not blow two words up to fill the screen.
   function resetView(): void {
-    view.z = 1;
-    view.cx = pageW() / 2;
-    view.cy = PAGE_H / 2;
+    const c = canvasRef.value;
+    if (options.board && c) {
+      const b = contentBox();
+      const w = Math.max(1, b.maxX - b.minX);
+      const h = Math.max(1, b.maxY - b.minY);
+      const base = fitScale(c);
+      const need = Math.min(c.width / w, c.height / h) / base;
+      view.z = Math.min(1, need * 0.96); // a little air around the content
+      view.cx = (b.minX + b.maxX) / 2;
+      view.cy = (b.minY + b.maxY) / 2;
+    } else {
+      view.z = 1;
+      view.cx = pageW() / 2;
+      view.cy = PAGE_H / 2;
+    }
     clampView();
     scheduleRender();
   }
@@ -608,7 +759,9 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     } catch {
       /* capture is best-effort */
     }
-    if (e.button === 1) {
+    // Middle button, the hand tool, or space held: drag the surface instead of
+    // writing on it. On a board this is the primary way around.
+    if (e.button === 1 || state.tool === 'hand' || spaceDown) {
       panning = { pointerId: e.pointerId, lastX: e.clientX, lastY: e.clientY };
       return;
     }
@@ -707,10 +860,14 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
       const Y = ((e.clientY - rect.top) / Math.max(1, rect.height)) * c.height;
       zoomAt(c, X, Y, Math.exp(-e.deltaY * 0.0022));
     } else {
+      // Plain wheel / two-finger scroll pans: the board scrolls like a document in
+      // both axes. (The vertical step used the horizontal ratio before, which made
+      // scrolling drift on a non-square canvas.)
       const S = scale(c);
       const kx = c.width / Math.max(1, rect.width);
+      const ky = c.height / Math.max(1, rect.height);
       view.cx += (e.deltaX * kx) / S;
-      view.cy += (e.deltaY * kx) / S;
+      view.cy += (e.deltaY * ky) / S;
       clampView();
       scheduleRender();
     }
@@ -718,6 +875,28 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
 
   function onContextMenu(e: Event): void {
     e.preventDefault(); // the barrel button must never open a context menu mid-flow
+  }
+
+  // Space held = temporary hand, the convention every canvas app shares. Only the
+  // flag is set here; typing a space into a field must stay a space, so nothing is
+  // prevented and editable targets are ignored.
+  let spaceDown = false;
+
+  function isEditable(t: EventTarget | null): boolean {
+    if (!(t instanceof HTMLElement)) return false;
+    return t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT';
+  }
+
+  function onSpaceDown(e: KeyboardEvent): void {
+    if (e.code === 'Space' && !isEditable(e.target)) spaceDown = true;
+  }
+
+  function onSpaceUp(e: KeyboardEvent): void {
+    if (e.code === 'Space') spaceDown = false;
+  }
+
+  function onWindowBlur(): void {
+    spaceDown = false; // a key released outside the window would never be seen
   }
 
   function attach(c: HTMLCanvasElement): void {
@@ -751,6 +930,12 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     { immediate: true, flush: 'post' },
   );
 
+  if (typeof window !== 'undefined') {
+    window.addEventListener('keydown', onSpaceDown);
+    window.addEventListener('keyup', onSpaceUp);
+    window.addEventListener('blur', onWindowBlur);
+  }
+
   // Aspect, scratch-share, or grid edits re-shape the page live.
   watch(
     () => [
@@ -769,6 +954,11 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     const c = canvasRef.value;
     if (c) detach(c);
     stopHoldUndo();
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('keydown', onSpaceDown);
+      window.removeEventListener('keyup', onSpaceUp);
+      window.removeEventListener('blur', onWindowBlur);
+    }
     if (rafId) cancelAnimationFrame(rafId);
   });
 
@@ -816,6 +1006,10 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     return rev;
   }
 
+  // Pixel size of the most recent export, for the probe: on a board this is the
+  // number that decides both legibility and image cost.
+  let lastExport = { w: 0, h: 0 };
+
   // 'main' is what grading sees; 'all' additionally takes the scratch column along
   // (a note capture wants the whole page, side arithmetic included).
   function exportImage(zone: 'main' | 'all' = 'main'): string {
@@ -847,10 +1041,21 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     const h = Math.max(1, maxY - minY);
     // Long edge capped by the export setting; scale also capped so a single short
     // line is not blown up into billboard glyphs (fewer pixels, fewer tokens).
-    const k = Math.min(settings.export.maxEdgePx / Math.max(w, h), 1.6);
+    let k = Math.min(settings.export.maxEdgePx / Math.max(w, h), 1.6);
+    if (options.board) {
+      // A board's ink can span several pages. Squeezing that long edge into the page
+      // cap would render the handwriting thinner than a pixel and the transcriber
+      // would read nothing, so keep page units 1:1 and bound the total pixels instead.
+      k = Math.min(1.6, Math.max(k, 1));
+      const px = w * h * k * k;
+      if (px > BOARD_MAX_PX) k *= Math.sqrt(BOARD_MAX_PX / px);
+    }
     const out = document.createElement('canvas');
-    out.width = Math.max(1, Math.round(w * k));
-    out.height = Math.max(1, Math.round(h * k));
+    // Rounding DOWN keeps a board export provably inside BOARD_MAX_PX; the pixel it
+    // can cost either edge is a pixel of the crop margin, never of the ink.
+    out.width = Math.max(1, Math.floor(w * k));
+    out.height = Math.max(1, Math.floor(h * k));
+    lastExport = { w: out.width, h: out.height };
     const ctx = out.getContext('2d');
     if (!ctx) return '';
     ctx.fillStyle = settings.canvas.backgroundColor;
@@ -861,11 +1066,12 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     return out.toDataURL('image/jpeg', settings.export.jpegQuality);
   }
 
-  // Console probe: __nlTablet() shows the live stroke/zone counts, the ink revision,
-  // the view, and the export size — pen problems become checkable facts instead of
-  // guesses about what the canvas holds.
+  // Console probe: __nlTablet() for the math pad, __nlInk() for the notes board.
+  // Shows the live stroke/zone counts, the ink revision, the view, the surface's
+  // grown bounds, and the export size — pen problems become checkable facts instead
+  // of guesses about what the canvas holds.
   if (typeof window !== 'undefined') {
-    (window as unknown as { __nlTablet: unknown }).__nlTablet = () => ({
+    (window as unknown as Record<string, unknown>)[options.probeName ?? '__nlTablet'] = () => ({
       strokes: strokes.length,
       main: strokes.filter((s) => s.zone === 'main').length,
       scratch: strokes.filter((s) => s.zone === 'scratch').length,
@@ -875,7 +1081,12 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
       canUndo: state.canUndo,
       canRedo: state.canRedo,
       lastDown,
+      // Which surface shape this is, and how far it has grown.
+      board: Boolean(options.board),
+      bbox: contentBox(),
+      view: { z: view.z, cx: Math.round(view.cx), cy: Math.round(view.cy) },
       exportBytes: exportImage().length,
+      exportPx: lastExport,
     });
   }
 
@@ -913,6 +1124,7 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     undo,
     redo,
     toggleEraser,
+    toggleHand,
     zoomBy,
     resetView,
     getStrokes,
