@@ -5,3 +5,5 @@ dist
 .DS_Store
 *.local
 .vite
+# the local file database: personal data, never in the repo
+data/

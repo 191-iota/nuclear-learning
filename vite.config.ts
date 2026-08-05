@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { fileURLToPath, URL } from 'node:url';
+import { localDb } from './server/localdb';
 
 // web_pen_sdk ships a webpack CommonJS bundle that transitively includes
 // firebase / jszip / jquery and references the Node `global` identifier.
@@ -8,7 +9,9 @@ import { fileURLToPath, URL } from 'node:url';
 // browser ESM build. If you ever hit a `Buffer is not defined` error, add a
 // Node polyfill plugin (e.g. vite-plugin-node-polyfills).
 export default defineConfig({
-  plugins: [vue()],
+  // The file database rides the dev server: everything durable lands under ./data,
+  // outside the browser profile, so clearing browser data destroys nothing.
+  plugins: [vue(), localDb(fileURLToPath(new URL('./data', import.meta.url)))],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
