@@ -1,5 +1,5 @@
 import { reactive, ref } from 'vue';
-import { generateLessonCard } from '@/lessonCard';
+import { generateAskCard, generateLessonCard } from '@/lessonCard';
 import { logEvent } from '@/stores/obslog';
 
 /**
@@ -34,6 +34,19 @@ export interface Lesson {
   // correction / hint. `regenerateCards()` backfills them.
   front?: string;
   back?: string;
+  // Where the card came from. Error cards (the original kind) omit this. Ask-derived
+  // cards carry it: 'ask-gap' = a typed question revealed a rule or connection not
+  // firmly held (recall front), 'ask-expansion' = the question reached for an adjacent
+  // technique worth practicing (small do-it task on a fresh instance as the front).
+  // For these, `mistake` holds the question verbatim and `note` the one-line naming of
+  // what it revealed (the rebuild path regenerates the card from both).
+  kind?: 'ask-gap' | 'ask-expansion';
+  note?: string;
+  // Ask-card writer generation. 2 = the theory-first pipeline (card written on the
+  // underlying rule, deck checked for coverage before writing). Ask cards below it
+  // predate that pipeline and are counted by needsRewrite() until Rebuild re-writes
+  // them. Error cards never carry it.
+  gen?: number;
   // Spaced-repetition state (Leitner box system).
   box: number; // 0..MAX_BOX, higher = longer interval
   due: number; // next review time (ms epoch)
@@ -127,6 +140,27 @@ export function isBadFront(l: Lesson): boolean {
   return !f.includes('?') && !prose;
 }
 
+// A card Rebuild should re-write: a bad front, or an ask card from before the
+// theory-first writer (those anchored on the question's wording and never checked
+// the deck for existing coverage).
+export function needsRewrite(l: Lesson): boolean {
+  return isBadFront(l) || (!!l.kind && (l.gen ?? 1) < 2);
+}
+
+// Compact one-line-per-card view of the deck for the ask writer's coverage check.
+// Newest first, capped; the card being rewritten passes its own id to be excluded,
+// or everything reads as already covered by itself.
+export function deckSummary(excludeId?: string, cap = 40): string[] {
+  const line = (l: Lesson) =>
+    l.kind ? l.front || l.note || l.mistake : l.front || l.wrong || l.mistake;
+  return [...lessonStore.lessons]
+    .filter((l) => l.id !== excludeId)
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, cap)
+    .map((l) => line(l).replace(/\s+/g, ' ').trim().slice(0, 140))
+    .filter(Boolean);
+}
+
 let counter = 0;
 
 /**
@@ -146,6 +180,9 @@ export function addLesson(input: {
   right?: string;
   front?: string;
   back?: string;
+  kind?: 'ask-gap' | 'ask-expansion';
+  note?: string;
+  gen?: number;
 }): void {
   const mistake = input.mistake.trim();
   if (!mistake) return;
@@ -155,8 +192,13 @@ export function addLesson(input: {
   const front = (input.front ?? '').slice(0, MAX_SOLUTION);
   const back = (input.back ?? '').slice(0, MAX_SOLUTION);
 
-  const dup = lessonStore.lessons.find(
-    (l) => l.mode === input.mode && norm(l.mistake) === norm(mistake) && norm(l.problem) === norm(problem),
+  // Ask cards carry theory, so their identity IS the card front (the same gap asked
+  // in different words writes the same card); error cards keep the mistake+problem
+  // key. A front-match resurfaces the existing card instead of cluttering the deck.
+  const dup = lessonStore.lessons.find((l) =>
+    input.kind
+      ? !!l.kind && !!front && norm(l.front ?? '') === norm(front)
+      : l.mode === input.mode && norm(l.mistake) === norm(mistake) && norm(l.problem) === norm(problem),
   );
   if (dup) {
     dup.seen += 1;
@@ -167,6 +209,9 @@ export function addLesson(input: {
     if (right) dup.right = right;
     if (front) dup.front = front;
     if (back) dup.back = back;
+    if (input.kind) dup.kind = input.kind;
+    if (input.note) dup.note = input.note.slice(0, 300);
+    if (input.gen) dup.gen = input.gen;
     persist();
     return;
   }
@@ -184,6 +229,9 @@ export function addLesson(input: {
     right,
     front,
     back,
+    kind: input.kind,
+    note: input.note?.slice(0, 300),
+    gen: input.gen,
     box: 0,
     due: Date.now(), // due immediately for the first review
     reps: 0,
@@ -266,9 +314,43 @@ export function regenerateCards(force = false): Promise<number> {
   if (rebuildP) return rebuildP;
   rebuildState.running = true;
   rebuildP = (async () => {
-    const targets = lessonStore.lessons.filter((l) => force || isBadFront(l));
+    const targets = lessonStore.lessons.filter((l) => force || needsRewrite(l));
     let done = 0;
+    let folded = 0;
     for (const l of targets) {
+      if (l.kind) {
+        // Ask-derived cards rebuild through the theory-first ask writer: their
+        // `mistake` is the typed question, no flagged error, so the mistake writer
+        // would invent a wrong-flavored card out of it. The writer sees the rest of
+        // the deck; a card whose knowledge another card already tests comes back
+        // `covered` and is folded out of the deck instead of rewritten.
+        const card = await generateAskCard({
+          problem: l.problem,
+          question: l.mistake,
+          answer: '',
+          what: l.note ?? '',
+          kind: l.kind === 'ask-gap' ? 'gap' : 'expansion',
+          solution: l.solution,
+          mode: l.mode,
+          deck: deckSummary(l.id),
+        });
+        if (!card) continue;
+        if (card.covered) {
+          const i = lessonStore.lessons.findIndex((x) => x.id === l.id);
+          if (i >= 0) {
+            lessonStore.lessons.splice(i, 1);
+            folded += 1;
+            persist();
+          }
+          continue;
+        }
+        l.front = card.front.slice(0, MAX_SOLUTION);
+        l.back = card.back.slice(0, MAX_SOLUTION);
+        l.gen = 2;
+        done += 1;
+        persist();
+        continue;
+      }
       const card = await generateLessonCard({
         problem: l.problem,
         mistake: l.mistake,
@@ -284,7 +366,9 @@ export function regenerateCards(force = false): Promise<number> {
         persist();
       }
     }
-    console.info(`[nuclear-math] rebuilt ${done}/${targets.length} lesson card(s)`);
+    console.info(
+      `[nuclear-math] rebuilt ${done}/${targets.length} lesson card(s)${folded ? `, folded ${folded} duplicate(s)` : ''}`,
+    );
     return done;
   })().finally(() => {
     rebuildP = null;

@@ -9,7 +9,7 @@ import {
   clearLessons,
   regenerateCards,
   rebuildState,
-  isBadFront,
+  needsRewrite,
   nowTick,
   MAX_BOX,
   type Lesson,
@@ -20,10 +20,12 @@ const stats = computed(() => lessonStats());
 const all = computed(() => [...lessonStore.lessons].sort((a, b) => b.ts - a.ts));
 
 // Cards captured before the tailored-card writer existed (or when its call failed)
-// have no `front` or a bad one (answer copied onto the front). Rebuild backfills them
-// on gpt-5.4 mini. The in-flight state lives in the store so a tab switch mid-rebuild
-// can't hide (or double-start) a running loop.
-const needsCard = computed(() => lessonStore.lessons.filter(isBadFront).length);
+// have no `front` or a bad one (answer copied onto the front), and ask cards from
+// before the theory-first writer are anchored on the question's wording. Rebuild
+// re-writes both classes on gpt-5.4 mini; ask duplicates the writer reports as
+// covered get folded out. The in-flight state lives in the store so a tab switch
+// mid-rebuild can't hide (or double-start) a running loop.
+const needsCard = computed(() => lessonStore.lessons.filter(needsRewrite).length);
 const rebuilding = computed(() => rebuildState.running);
 function rebuild() {
   void regenerateCards();
@@ -98,7 +100,7 @@ function statusLabel(l: Lesson): string {
   <section class="scroll">
     <div class="page-head">
       <h2>Lessons</h2>
-      <span class="muted mono" style="font-size: 0.72rem">your own corrected mistakes</span>
+      <span class="muted mono" style="font-size: 0.72rem">your corrected mistakes and what your questions reveal</span>
       <span class="spacer" />
       <button v-if="needsCard" class="ghost" :disabled="rebuilding" @click="rebuild">
         {{ rebuilding ? 'Rebuilding…' : `Rebuild ${needsCard} card${needsCard > 1 ? 's' : ''}` }}
@@ -117,6 +119,7 @@ function statusLabel(l: Lesson): string {
       <div class="card flash">
         <div class="flash-tag">
           <span class="mono">{{ current.modeLabel }}</span>
+          <span v-if="current.kind" class="srcchip mono">{{ current.kind === 'ask-gap' ? 'question · gap' : 'question · practice' }}</span>
           <span v-if="current.seen > 1" class="repeat mono">missed {{ current.seen }}×</span>
         </div>
 
@@ -124,6 +127,7 @@ function statusLabel(l: Lesson): string {
           <div v-if="current.problem" class="problem mono"><MathText :text="current.problem" /></div>
           <div class="ask">
             <MathText v-if="current.front" :text="current.front" />
+            <MathText v-else-if="current.kind" :text="current.note || current.mistake" />
             <template v-else>Recall the mistake you fixed here.</template>
           </div>
           <div class="hint muted">
@@ -138,6 +142,10 @@ function statusLabel(l: Lesson): string {
             <template v-if="current.back">
               <div class="answer-k mono">answer</div>
               <div class="fix"><MathText :text="current.back" /></div>
+            </template>
+            <template v-else-if="current.kind">
+              <div class="answer-k mono">the point</div>
+              <div class="fix"><MathText :text="current.note || current.mistake" /></div>
             </template>
             <template v-else-if="current.wrong || current.right">
               <div class="answer-k mono">what went wrong</div>
@@ -185,7 +193,7 @@ function statusLabel(l: Lesson): string {
         <div class="card stat">
           <div class="k">Total</div>
           <div class="v">{{ stats.total }}</div>
-          <div class="sub">mistakes logged</div>
+          <div class="sub">cards logged</div>
         </div>
       </div>
 
@@ -204,9 +212,13 @@ function statusLabel(l: Lesson): string {
       <div class="list">
         <div v-for="l in all" :key="l.id" class="card lesson">
           <div class="lesson-main">
-            <div class="lesson-mistake"><MathText :text="l.wrong || l.mistake" /></div>
+            <!-- Ask cards show their theory (front), never the typed question: the
+                 question is provenance, kept on the card but not the display. -->
+            <div class="lesson-mistake"><MathText :text="l.kind ? l.front || l.note || l.mistake : l.wrong || l.mistake" /></div>
             <div class="lesson-meta muted mono">
               <span>{{ l.modeLabel }}</span>
+              <span v-if="l.kind" class="dot">·</span>
+              <span v-if="l.kind">{{ l.kind === 'ask-gap' ? 'question · gap' : 'question · practice' }}</span>
               <template v-if="l.problem"><span class="dot">·</span><span><MathText :text="l.problem" /></span></template>
               <span class="dot">·</span><span>{{ rel(l.ts) }}</span>
             </div>
@@ -223,8 +235,9 @@ function statusLabel(l: Lesson): string {
 
     <!-- EMPTY -->
     <div v-else class="empty">
-      No lessons yet. When the grader catches a mistake and you fix it, it is logged here. You
-      review it later with spaced repetition so it stops coming back.
+      No lessons yet. When the grader catches a mistake and you fix it, it is logged here; a typed
+      question that reveals a gap or a technique worth practicing becomes a card too. You review
+      them later with spaced repetition so they stop coming back.
     </div>
   </section>
 </template>
@@ -262,6 +275,14 @@ function statusLabel(l: Lesson): string {
   font-size: 0.66rem;
 }
 
+.srcchip {
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.66rem;
+}
+
 .cue {
   text-align: center;
   padding: 1.2rem 0;
@@ -277,6 +298,7 @@ function statusLabel(l: Lesson): string {
 .ask {
   font-size: 1.1rem;
   font-weight: 600;
+  overflow-x: auto;
 }
 
 .hint {
@@ -307,6 +329,7 @@ function statusLabel(l: Lesson): string {
   font-weight: 600;
   color: var(--ink);
   margin-top: 0.3rem;
+  overflow-x: auto;
 }
 
 .fix-k {
@@ -319,6 +342,7 @@ function statusLabel(l: Lesson): string {
   margin-top: 0.3rem;
   border-left: 2px solid var(--good);
   padding-left: 0.6rem;
+  overflow-x: auto;
 }
 
 .sol {
@@ -338,6 +362,7 @@ function statusLabel(l: Lesson): string {
   border-radius: var(--radius);
   padding: 0.7rem;
   margin-top: 0.5rem;
+  overflow-x: auto;
 }
 
 .grade {
@@ -378,6 +403,7 @@ function statusLabel(l: Lesson): string {
 .lesson-mistake {
   font-size: 0.86rem;
   color: var(--ink);
+  overflow-x: auto;
 }
 
 .lesson-meta {

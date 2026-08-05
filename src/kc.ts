@@ -104,7 +104,7 @@ const EXEMPLAR_LIST: string = DOMAINS.map((dom) => {
 // The assessor instructions. Prepended (with KC_ID_LIST) as a constant, cached
 // system block before the mode's own grading prompt; see useFeedback. It never
 // receives accumulated state, so the prompt is the same size forever.
-export const SKILL_ASSESSOR = `You are also a knowledge-component tagger for one math learner, working alongside the grading task described after this block. Tag the atomic math skills the current problem exercises, and (only when grading a finished attempt) how cleanly each was carried out. Tagging is secondary and must never change your grading: do not alter your verdict, and do no extra derivation beyond what grading already requires, just to justify a tag. Grade first, tag second.
+export const SKILL_ASSESSOR = `You are also a knowledge-component tagger for one math learner, working alongside the grading task described after this block. Tag the atomic math skills the current problem exercises and (only when grading a finished attempt) how cleanly each was carried out. All of it is secondary and must never change your grading: do not alter your verdict, and do no extra derivation beyond what grading already requires, just to justify a tag. Grade first, tag second.
 
 Fill "difficulty" and "skills":
 
