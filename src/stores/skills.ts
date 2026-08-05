@@ -1,34 +1,21 @@
 import { reactive } from 'vue';
 import { settings } from '@/stores/settings';
 import { logEvent } from '@/stores/obslog';
-import {
-  KC_SET,
-  KC_DEFS,
-  DOMAINS,
-  levelOf,
-  labelOf,
-  domainOf,
-  topicOf,
-} from '@/kc';
+import { KC_SET, KC_DEFS, DOMAINS, labelOf, domainOf, topicOf } from '@/kc';
 
 /**
- * Skill-mastery estimator. The solve/confirm assessor (see useFeedback) is a stateless
- * sensor: once per solved problem it tags the work against the fixed knowledge-
- * component taxonomy and emits a tiny typed packet. This store is the estimator
- * that turns those packets into a per-skill mastery you can track over time. All
- * of it is cheap local TypeScript, O(1) per observation, so the model prompt never
- * grows and history is free.
+ * The per-skill diagnostic layer, and nothing else. Per knowledge component a ring
+ * of the last few observed signals (clean 1, shaky 0.5, wrong 0), whose plain mean
+ * is the shown mastery. It steers the drill and review recommendations.
  *
- * Per knowledge component we keep a Glicko-style Elo rating: a `theta` (demonstrated
- * ability, logits) updated against the problem's difficulty, a rating deviation `RD`
- * that makes the step size uncertainty-driven and re-opens after idle gaps, an EMA
- * of observed difficulty, success/failure counters, and a memory half-life. The
- * shown number shrinks toward the prior under thin evidence and decays toward chance
- * as a skill goes stale, while `theta` stays sticky for the next update. Domains roll
- * up with a coverage prior, so demonstrating 2 of 18 calculus skills does not light
- * the calculus bar at 95%.
+ * The rating/rank system that used to live beside it (judged performance samples
+ * averaged into an Elo-style number, rank bands, announcements, day deltas) was
+ * removed by owner decision: the model's performance judgments were not reliable
+ * enough to build an evaluation on, and drills are the part that earns its keep.
+ * Persisted v2 stores carry the old samples; v3 migration keeps the skill rings and
+ * the solved counter and drops the rest.
  *
- * Console access:  __nlSkills.summary() · __nlSkills.rankings() · __nlSkills.reset()
+ * Console access:  __nlSkills.all() · __nlSkills.rankings() · __nlSkills.reset()
  */
 
 export type KCRole = 'core' | 'support';
@@ -43,141 +30,64 @@ export interface KCObservation {
 export interface SkillPacket {
   difficulty?: number;
   skills?: KCObservation[];
-  // Delivered hint rungs of the resolving error run (0 = unaided). A CORRECT reached
-  // at rung 0 and one reached after climbing to the printed solutions used to move the
-  // rating identically; this is how the packet says how much help the win took. Client-
-  // side only, never sent to the model.
+  // Delivered hint rungs of the resolving error run, carried for the ledger.
   rungs?: number;
 }
 
-// Durable per-KC state (<=125 records).
+// Durable per-KC state (<=125 records): the last few signals and when.
 export interface KCState {
-  theta: number; // demonstrated rating, logits (init 0, or +0.7 for assumed-mastered atoms)
-  RD: number; // rating deviation -> drives step size K and the credible interval
-  dbar: number; // EMA of observed problem difficulty (init = curriculum level)
-  n: number; // observation count -> confidence weight
-  s: number; // clean/successful executions
-  f: number; // failed executions (+0.5 on a shaky)
-  S: number; // memory half-life in days; grows on spaced clean work, halves on a miss
+  sig: number[]; // ring of recent signals, oldest first (clean 1, shaky 0.5, wrong 0)
+  n: number; // lifetime observation count
+  f: number; // lifetime misses (+0.5 per shaky), the "missed N×" chip
   lastSeen: number; // ms epoch, 0 = never
 }
 
-// One daily per-domain snapshot, the source for the mastery-over-time chart.
-export interface DomainSnapshot {
-  day: number;
-  domain: string;
-  mastery: number; // 0..1
-  cov: number; // coverage 0..1
-}
-
-// Global ability: one problem = one observation of a single ability G on the same
-// logit scale as per-KC theta. Skills are correlated, so evidence anywhere is evidence
-// everywhere — this is the adaptive-testing shortcut that lets placement converge in a
-// dozen problems instead of demanding every one of 125 skills be demonstrated twice.
-export interface GlobalAbility {
-  theta: number; // logits, anchored so 0 = even odds on a BM-median (level 3) problem
-  RD: number; // rating deviation, drives step size + the "still settling" display
-  n: number; // problems observed
-  day: number; // day of the last update, for the daily loss floor
-  dayStart: number; // theta at the start of that day
-  lastAt: number; // ms epoch of the last update; idle days re-inflate RD (layoff honesty)
-  solvedDay: number; // day of the solved counter below
-  solvedCount: number; // CORRECTs delivered that day (the session line's count)
-}
-
-// One rating snapshot per day with activity — the source for the rating curve.
-export interface RatingSnapshot {
-  day: number;
-  r: number;
-}
-
 export interface SkillStore {
-  version: 1;
+  version: 3;
   kcs: Record<string, KCState>;
-  log: DomainSnapshot[];
-  diffHist: number[]; // realized observed-difficulty tally [d1..d7], a spread audit
-  g: GlobalAbility;
-  ratingLog: RatingSnapshot[];
-  // Dominant domain of the last few rated problems. When one domain fills more than
-  // half the window, further wins there are confirmation about that domain, not
-  // information about G: the schema-farming counterpart of the confirmation cap.
-  recentDomains: string[];
-  // Highest rank band ever spoken aloud (rank.ts n), so a crossing is announced once.
-  announcedRank: number;
+  // Session-line day stats: CORRECTs delivered today.
+  solvedDay: number;
+  solvedCount: number;
 }
 
-// ---- locked constants ----
-const D_SLOPE = 0.6; // difficulty is ordinal not interval; lower leverage of a mis-rating
-const DIFF_LEVEL_W = 0.6;
-const DIFF_DBAR_W = 0.4;
-const DIFF_LLM_W = 0.5;
-const DIFF_STEP_W = 0.5;
-const DBAR_ALPHA = 0.3;
-const SUPPORT_D_SHRINK = 0.4;
-const SUPPORT_CREDIT = 0.5;
-const SHAKY_SCORE = 0.75;
-const SHAKY_CREDIT = 0.5;
-const RD0 = 1.0;
-const RD_MAX = 1.2;
-const C_RD = 0.03;
-const K_FLOOR = 0.04;
-const K_CEIL = 0.8;
-const CONF_K0 = 3;
-const S0 = 30;
-const S_MIN = 7;
-const S_MAX = 365;
-const FRESH_BASE = 0.5; // R = 0.5^(days/halflife): one half-life per S days
-const SPACING_GATE = 0.5;
-const W0 = 0.15; // coverage-prior weight per untouched leaf
-const SEED_CORE_THETA = 0.7;
-const MAXK_CAP = 6;
-const MAX_SNAPSHOTS = 1500;
+const KEY = 'nl.skills.v3';
+const OLD_KEY = 'nl.skills.v2';
 const DAY = 86_400_000;
-const EPS = 1e-3;
-const KEY = 'nl.skills.v1';
+const RING = 12; // per-KC memory: the last dozen observations decide the shown mastery
+const FRESH_DAYS = 30; // freshness fades linearly to 0 over this many idle days
 
-function dTarget(): number {
-  const t = (settings.api as { masteryTarget?: number }).masteryTarget;
-  return typeof t === 'number' ? t : 0;
-}
-
-function sigma(x: number): number {
-  return 1 / (1 + Math.exp(-x));
-}
-function clampInt(x: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, Math.round(x)));
-}
-function stepBucket(k: number): number {
-  // School range unchanged (<=6 steps); the top buckets let a long proof's step count
-  // corroborate a degree-level (6-7) model rating instead of always dragging it down.
-  return k <= 1 ? 1 : k === 2 ? 2 : k <= 4 ? 3 : k <= 6 ? 4 : k <= 9 ? 5 : k <= 12 ? 6 : 7;
-}
-function obsDiff(llm: number | null, steps: number): number {
-  const sb = stepBucket(steps);
-  return clampInt(llm != null ? DIFF_LLM_W * llm + DIFF_STEP_W * sb : sb, 1, 7);
-}
-function credit(role: KCRole): number {
-  return role === 'core' ? 1 : SUPPORT_CREDIT;
-}
-function score(sig: KCSignal): number {
-  return sig === 'clean' ? 1 : sig === 'shaky' ? SHAKY_SCORE : 0;
+function fresh(): SkillStore {
+  return {
+    version: 3,
+    kcs: {},
+    solvedDay: 0,
+    solvedCount: 0,
+  };
 }
 
-// ---- locked constants: rating honesty ----
-// Layoff honesty: g.RD re-inflates with idle days (smaller constant than the per-KC
-// C_RD; ability fades slower than recall) and is capped below fresh-store uncertainty,
-// so a long break makes the number provisional again without zeroing it.
-const G_RD_IDLE = 0.02;
-const G_RD_IDLE_MAX = 0.9;
-// Topic window for the blocked-diet cap: dominant domains of the last N rated problems.
-const DOMAIN_WINDOW = 10;
-const DOMAIN_MIN = 4; // no cap judgment off fewer problems than this
-// Hinted-win discount: hintW = 1 / (1 + HINT_W * rungs), positive movement only.
-const HINT_W = 0.5;
-
-// ---- store ----
-function freshG(): GlobalAbility {
-  return { theta: 0, RD: 1.2, n: 0, day: 0, dayStart: 0, lastAt: 0, solvedDay: 0, solvedCount: 0 };
+// v2 carried the rating machinery (performance samples, rating log, announced rank);
+// only the skill rings and the solved counter survive into v3.
+function migrateV2(p: {
+  kcs?: Record<string, KCState>;
+  solvedDay?: number;
+  solvedCount?: number;
+}): SkillStore {
+  const kcs: Record<string, KCState> = {};
+  for (const [id, kc] of Object.entries(p.kcs ?? {})) {
+    if (!kc || !KC_SET.has(id) || !Array.isArray(kc.sig)) continue;
+    kcs[id] = {
+      sig: kc.sig.slice(-RING),
+      n: kc.n ?? kc.sig.length,
+      f: kc.f ?? 0,
+      lastSeen: kc.lastSeen ?? 0,
+    };
+  }
+  return {
+    version: 3,
+    kcs,
+    solvedDay: p.solvedDay ?? 0,
+    solvedCount: p.solvedCount ?? 0,
+  };
 }
 
 function load(): SkillStore {
@@ -185,37 +95,21 @@ function load(): SkillStore {
     const saved = localStorage.getItem(KEY);
     if (saved) {
       const p = JSON.parse(saved) as Partial<SkillStore>;
-      if (p && p.kcs && typeof p.kcs === 'object') {
-        return {
-          version: 1,
-          kcs: p.kcs as Record<string, KCState>,
-          log: Array.isArray(p.log) ? (p.log as DomainSnapshot[]) : [],
-          // A pre-degree-ladder store carries a length-5 tally; pad it so od 6-7 has slots.
-          diffHist: Array.isArray(p.diffHist)
-            ? [...(p.diffHist as number[]).slice(0, 7), 0, 0, 0, 0, 0, 0, 0].slice(0, 7)
-            : [0, 0, 0, 0, 0, 0, 0],
-          g: p.g && typeof p.g.theta === 'number' ? { ...freshG(), ...(p.g as GlobalAbility) } : freshG(),
-          ratingLog: Array.isArray(p.ratingLog) ? (p.ratingLog as RatingSnapshot[]) : [],
-          recentDomains: Array.isArray(p.recentDomains)
-            ? (p.recentDomains as string[]).slice(-DOMAIN_WINDOW)
-            : [],
-          announcedRank: typeof p.announcedRank === 'number' ? p.announcedRank : 0,
-        };
+      if (p && p.version === 3 && p.kcs) {
+        return { ...fresh(), ...p } as SkillStore;
       }
+    }
+    const old = localStorage.getItem(OLD_KEY);
+    if (old) {
+      const migrated = migrateV2(JSON.parse(old));
+      localStorage.setItem(KEY, JSON.stringify(migrated));
+      localStorage.removeItem(OLD_KEY);
+      return migrated;
     }
   } catch {
     /* fall through to a fresh store */
   }
-  return {
-    version: 1,
-    kcs: {},
-    log: [],
-    diffHist: [0, 0, 0, 0, 0, 0, 0],
-    g: freshG(),
-    ratingLog: [],
-    recentDomains: [],
-    announcedRank: 0,
-  };
+  return fresh();
 }
 
 export const skillStore = reactive(load());
@@ -231,69 +125,24 @@ function persist(): void {
 function materialize(id: string): KCState {
   let kc = skillStore.kcs[id];
   if (!kc) {
-    const seeded = id.startsWith('core.arith.') || id.startsWith('core.alg.');
-    kc = {
-      theta: seeded ? SEED_CORE_THETA : 0,
-      RD: RD0,
-      dbar: levelOf(id),
-      n: 0,
-      s: 0,
-      f: 0,
-      S: S0,
-      lastSeen: 0,
-    };
+    kc = { sig: [], n: 0, f: 0, lastSeen: 0 };
     skillStore.kcs[id] = kc;
   }
   return kc;
-}
-
-// One uncertainty-driven Elo step for a single knowledge component. `hintW` discounts
-// POSITIVE movement only (a hinted win is weaker evidence of unaided competence, the
-// construct the exams price); losses always count in full.
-function eloUpdate(o: KCObservation, sig: KCSignal, od: number, blameScale: number, hintW: number, now: number): void {
-  const kc = materialize(o.id);
-  // Clamped: a backwards system clock (now < lastSeen) would drive the RD pre-inflation
-  // sqrt negative and poison theta/RD with a persisted NaN.
-  const dDays = kc.lastSeen ? Math.max(0, now - kc.lastSeen) / DAY : 0;
-  // Pre-inflate RD for the idle gap so a long-unpracticed skill becomes plastic again.
-  kc.RD = Math.min(RD_MAX, Math.sqrt(kc.RD * kc.RD + C_RD * C_RD * dDays));
-  // Difficulty anchor: blend the skill's curriculum level with the running average of
-  // observed difficulty (which itself blends the model rating with an objective step count).
-  kc.dbar = (1 - DBAR_ALPHA) * kc.dbar + DBAR_ALPHA * od;
-  // KC curriculum levels stay 1-5 (they are school skills); dbar can pull effDiff above 5
-  // when the problems actually played were degree-level, so hard play still pays per-skill.
-  const effDiff = clampInt(DIFF_LEVEL_W * levelOf(o.id) + DIFF_DBAR_W * kc.dbar, 1, 7);
-  const dItem = (effDiff - 3) * D_SLOPE;
-  const dEff = o.role === 'core' ? dItem : SUPPORT_D_SHRINK * dItem;
-  const E = sigma(kc.theta - dEff);
-  const K = Math.max(K_FLOOR, Math.min(K_CEIL, kc.RD * kc.RD));
-  const sc = score(sig);
-  const creditEff =
-    credit(o.role) * (sig === 'shaky' ? SHAKY_CREDIT : 1) * (sig === 'wrong' ? blameScale : 1);
-  const step = creditEff * K * (sc - E);
-  kc.theta += step > 0 ? hintW * step : step;
-  // Shrink RD by the Fisher information this observation carried.
-  kc.RD = Math.sqrt(1 / (1 / (kc.RD * kc.RD) + Math.max(EPS, E * (1 - E))));
-  kc.n += 1;
-  if (sc >= 0.75) kc.s += 1;
-  else if (sc <= 0.25) kc.f += 1;
-  if (sig === 'shaky') kc.f += 0.5;
-  // Stability (memory half-life): spaced clean work lengthens it; a miss halves it.
-  if (sig === 'clean' && dDays >= SPACING_GATE * kc.S) kc.S = Math.min(S_MAX, kc.S * 1.8);
-  else if (sig === 'wrong') kc.S = Math.max(S_MIN, kc.S * 0.5);
-  kc.lastSeen = now;
 }
 
 function signalRank(sig: KCObservation['signal']): number {
   return sig === 'wrong' ? 3 : sig === 'shaky' ? 2 : sig === 'clean' ? 1 : 0;
 }
 
-// Fold one solved-problem packet into the estimator. Order matters: filter to valid
-// ids, dedupe keeping the worst signal, sort most-informative first, then cap, so any
-// dropped observation is the least informative.
+/**
+ * Fold one graded page's skill tags into the diagnostic layer: validate ids, dedupe
+ * keeping the worst signal, then push each signal onto its skill's ring. That is the
+ * whole update.
+ */
 export function applySkillPacket(
   packet: SkillPacket,
-  steps: number,
+  _steps: number,
   now: number,
   meta?: { source: 'resolve' | 'abandon'; label?: string },
 ): void {
@@ -312,246 +161,56 @@ export function applySkillPacket(
   );
   if (!signed.length) return;
 
-  signed.sort((a, b) => {
-    const ra = a.role === 'core' ? 1 : 0;
-    const rb = b.role === 'core' ? 1 : 0;
-    if (ra !== rb) return rb - ra;
-    return signalRank(b.signal) - signalRank(a.signal);
-  });
-  const maxK = Math.min(MAXK_CAP, (packet.difficulty != null ? clampInt(packet.difficulty, 1, 7) : 3) + 2);
-  const use = signed.slice(0, maxK);
-
-  const od = obsDiff(packet.difficulty != null ? packet.difficulty : null, steps);
-  skillStore.diffHist[od - 1] += 1;
-
-  // Cap total negative credit across simultaneously-wrong KCs so one ambiguous error
-  // cannot tank several skills.
-  const wrongCredit = use
-    .filter((o) => o.signal === 'wrong')
-    .reduce((a, o) => a + credit(o.role), 0);
-  const blameScale = 1 / Math.max(1, wrongCredit);
-
-  const rungs = Math.max(0, Math.round(packet.rungs ?? 0));
-  const hintW = 1 / (1 + HINT_W * rungs);
-
-  for (const o of use) eloUpdate(o, o.signal as KCSignal, od, blameScale, hintW, now);
-
-  // Global ability: this problem is ONE observation of G — the mean signal of ALL
-  // validated observations (`signed`, before the per-KC maxK truncation, whose
-  // worst-first ordering would bias a mean) at the observed difficulty. Uncertainty-
-  // driven step, floored RD so late problems still move it a little; no time decay
-  // (ability does not evaporate in days the way recall does). Stability rules:
-  // a clean solve the estimate already expected (E >= .85) is confirmation, not
-  // information — no upward push, so grinding easy problems cannot farm the rating;
-  // every miss counts but is Fisher-damped (full weight at E = .5, shrinking toward
-  // the extremes, no step discontinuity); and a single day can never cost more than
-  // about one rank band (the daily loss floor) — no chess rating moves 600 in a day.
-  const gSc = signed.reduce((a, o) => a + score(o.signal as KCSignal), 0) / signed.length;
-  const g = skillStore.g;
-  // Layoff honesty: idle days re-inflate g's uncertainty BEFORE this observation is
-  // priced, so the first problems back move the number properly and the displayed
-  // plus-minus stops asserting stale confidence after a break.
-  if (g.lastAt) {
-    const idleDays = Math.max(0, now - g.lastAt) / DAY;
-    g.RD = Math.min(G_RD_IDLE_MAX, Math.sqrt(g.RD * g.RD + G_RD_IDLE * G_RD_IDLE * idleDays));
+  for (const o of signed) {
+    const kc = materialize(o.id);
+    const sc = o.signal === 'clean' ? 1 : o.signal === 'shaky' ? 0.5 : 0;
+    kc.sig.push(sc);
+    if (kc.sig.length > RING) kc.sig.shift();
+    kc.n += 1;
+    if (o.signal === 'wrong') kc.f += 1;
+    else if (o.signal === 'shaky') kc.f += 0.5;
+    kc.lastSeen = now;
   }
-  const gE = sigma(g.theta - (od - 3) * D_SLOPE);
-  const gDay = Math.floor(now / DAY);
-  if (g.day !== gDay) {
-    g.day = gDay;
-    g.dayStart = g.theta;
-  }
-  // Blocked-diet cap: how much of the recent window this problem's dominant domain
-  // already fills. Beyond half, positive movement shrinks by the redundancy share (a
-  // tenth consecutive induction win is confirmation about induction, not information
-  // about G); losses always count in full, and play stays 100% learner-chosen.
-  const domCount = new Map<string, number>();
-  for (const o of use) {
-    const d = domainOf(o.id);
-    domCount.set(d, (domCount.get(d) ?? 0) + 1);
-  }
-  let dom = '';
-  for (const [d, c] of domCount) if (!dom || c > (domCount.get(dom) ?? 0)) dom = d;
-  const ring = skillStore.recentDomains;
-  const sameShare = ring.length >= DOMAIN_MIN ? ring.filter((d) => d === dom).length / ring.length : 0;
-  if (!(gSc >= gE && gE >= 0.85)) {
-    const gK = Math.min(0.35, g.RD * g.RD);
-    const damp = gSc < gE ? 4 * gE * (1 - gE) : 1;
-    let gStep = gK * damp * (gSc - gE);
-    if (gStep > 0) {
-      gStep *= hintW; // a hinted win carries less information (positive side only)
-      if (sameShare > 0.5) gStep *= 1 - sameShare;
-    }
-    g.theta += gStep;
-    g.theta = Math.max(g.theta, g.dayStart - MAX_DAY_DROP);
-    g.RD = Math.max(0.25, Math.sqrt(1 / (1 / (g.RD * g.RD) + Math.max(EPS, gE * (1 - gE)))));
-  }
-  g.n += 1;
-  g.lastAt = now;
-  ring.push(dom);
-  if (ring.length > DOMAIN_WINDOW) ring.shift();
-
-  // Rating snapshot for the curve: one point per active day, upserted so the last
-  // problem of the day wins. Bounded like the domain log.
-  {
-    const day = Math.floor(now / DAY);
-    const r = ratingOf(g.theta);
-    const existing = skillStore.ratingLog.find((s) => s.day === day);
-    if (existing) existing.r = r;
-    else skillStore.ratingLog.push({ day, r });
-    if (skillStore.ratingLog.length > MAX_SNAPSHOTS) skillStore.ratingLog.shift();
-  }
-
-  upsertSnapshots(use, now);
   persist();
 
-  // One ledger event per applied packet (the observation log; see obslog.ts). Compact
-  // on purpose: enough to replay the estimator's inputs and audit scale drift offline.
   logEvent('packet', {
     source: meta?.source ?? 'resolve',
     label: meta?.label ?? '',
-    od,
-    gSc: Math.round(gSc * 1000) / 1000,
-    gE: Math.round(gE * 1000) / 1000,
-    rungs,
-    sameShare: Math.round(sameShare * 100) / 100,
-    rating: ratingOf(g.theta),
-    n: g.n,
-    skills: use.map((o) => `${o.id}:${o.role === 'core' ? 'c' : 's'}:${(o.signal as string)[0]}`),
+    skills: signed.map((o) => `${o.id}:${o.role === 'core' ? 'c' : 's'}:${(o.signal as string)[0]}`),
   });
 }
 
-// ---- session-line day stats (P02) ----
+// ---- session-line day stats ----
 
 // Counted at the moment a CORRECT is actually delivered (deliver()'s dedup key makes
-// that once per problem), never derived from usage buckets: an abandoned page is a
-// rated loss and must never read as solved.
+// that once per problem), never derived from usage buckets.
 export function noteSolved(now = Date.now()): void {
-  const g = skillStore.g;
   const day = Math.floor(now / DAY);
-  if (g.solvedDay !== day) {
-    g.solvedDay = day;
-    g.solvedCount = 0;
+  if (skillStore.solvedDay !== day) {
+    skillStore.solvedDay = day;
+    skillStore.solvedCount = 0;
   }
-  g.solvedCount += 1;
+  skillStore.solvedCount += 1;
   persist();
 }
 
-export interface DayStats {
-  solved: number;
-  ratingDelta: number | null; // today's rating movement, null before the first rated problem
-}
-
-export function dayStats(now = Date.now()): DayStats {
-  const g = skillStore.g;
+export function solvedToday(now = Date.now()): number {
   const day = Math.floor(now / DAY);
-  return {
-    solved: g.solvedDay === day ? g.solvedCount : 0,
-    ratingDelta: g.n > 0 && g.day === day ? ratingOf(g.theta) - ratingOf(g.dayStart) : null,
-  };
+  return skillStore.solvedDay === day ? skillStore.solvedCount : 0;
 }
 
-export function announcedRank(): number {
-  return skillStore.announcedRank;
+// ---- the diagnostic layer: per-skill mastery for weak spots and drills ----
+
+function masteryOf(kc: KCState): number {
+  if (!kc.sig.length) return 0;
+  return kc.sig.reduce((a, b) => a + b, 0) / kc.sig.length;
 }
 
-export function markRankAnnounced(n: number): void {
-  if (n > skillStore.announcedRank) {
-    skillStore.announcedRank = n;
-    persist();
-  }
-}
-
-// ---- placement + rating: where the global ability sits ----
-
-// The level at which the learner would solve about 3 problems in 4 — the working
-// frontier, continuous on the 1..5 curriculum scale.
-const PLACE_SUCCESS_MARGIN = 1.1; // logit margin for ~75% success
-const INFER_N0 = 8; // problems until inference carries half weight
-
-// The rating is the same quantity on a chess-flavored scale: 400 points per curriculum
-// level, so 1600 = solid at the BM median and every band edge is a round-ish number.
-// R = 400 * level + 400, level = 3 + (theta - margin) / D_SLOPE.
-const RATING_PER_LEVEL = 400;
-const RATING_MIN = 400;
-// Level 7 frontier (graduate-entry maturity). Reachable: the confirmation cap only
-// stalls positive updates once expected success on the hardest bank material (od 7)
-// hits .85, i.e. theta ~4.13 — comfortably above the 3.5 this cap corresponds to.
-const RATING_MAX = 3200;
-// One day of losses can cost at most about one rank band (0.45 logits ~ 300 rating).
-const MAX_DAY_DROP = 0.45;
-
-export function ratingOf(theta: number): number {
-  const level = 3 + (theta - PLACE_SUCCESS_MARGIN) / D_SLOPE;
-  return Math.round(Math.min(RATING_MAX, Math.max(RATING_MIN, RATING_PER_LEVEL * level + 400)));
-}
-
-export interface Rating {
-  value: number;
-  pm: number; // uncertainty half-width in rating points, from RD
-  n: number; // problems behind it
-  provisional: boolean;
-  weekDelta: number | null; // change over the last 7 active-ish days, null without history
-}
-
-export function rating(now = Date.now()): Rating | null {
-  const g = skillStore.g;
-  if (g.n === 0) return null;
-  const value = ratingOf(g.theta);
-  const pm = Math.round((RATING_PER_LEVEL / D_SLOPE) * g.RD);
-  const day = Math.floor(now / DAY);
-  const week = skillStore.ratingLog.filter((s) => s.day >= day - 7 && s.day < day);
-  const base = week.length ? week[0].r : null;
-  return {
-    value,
-    pm,
-    n: g.n,
-    // Provisional until the evidence is real AND the uncertainty has come down —
-    // a bare count clears too early (RD at n=5 is still ~±480 rating points).
-    provisional: g.n < 5 || g.RD > 0.55,
-    weekDelta: base !== null ? value - base : null,
-  };
-}
-
-export function ratingHistory(): RatingSnapshot[] {
-  return skillStore.ratingLog.slice();
-}
-
-export interface Placement {
-  level: number; // continuous 1..7, clamped
-  n: number; // problems behind the estimate
-  settled: boolean; // enough evidence to show a marker
-}
-
-export function placement(): Placement | null {
-  const g = skillStore.g;
-  if (g.n === 0) return null;
-  const level = Math.min(7, Math.max(1, 3 + (g.theta - PLACE_SUCCESS_MARGIN) / D_SLOPE));
-  return { level, n: g.n, settled: g.n >= 5 };
-}
-
-// P(an untouched skill at this curriculum level is already held), inferred from the
-// global ability and gated by how much evidence backs it — 0 with no data, so band
-// fills start honest and grow as the estimate firms up.
-export function inferredMastery(kcLevel: number): number {
-  const g = skillStore.g;
-  if (g.n === 0) return 0;
-  const iw = g.n / (g.n + INFER_N0);
-  const margin = g.theta - PLACE_SUCCESS_MARGIN - (kcLevel - 3) * D_SLOPE;
-  return iw * sigma(margin / 0.5);
-}
-
-// ---- display (computed on read; theta and RD stay sticky internally) ----
-function confWeight(n: number): number {
-  return n / (n + CONF_K0);
-}
-function retrievability(kc: KCState, now: number): number {
-  return kc.lastSeen ? Math.pow(FRESH_BASE, (now - kc.lastSeen) / DAY / kc.S) : 1;
-}
-function masteryFrac(kc: KCState, now: number): number {
-  const cw = confWeight(kc.n);
-  const R = retrievability(kc, now);
-  return 0.5 + (sigma((kc.theta - dTarget()) * cw) - 0.5) * R;
+// Freshness fades linearly to 0 over FRESH_DAYS idle days; enough to rank rusty
+// skills without a forgetting-curve model.
+function freshness(kc: KCState, now: number): number {
+  if (!kc.lastSeen) return 1;
+  return Math.max(0, 1 - (now - kc.lastSeen) / DAY / FRESH_DAYS);
 }
 
 export interface KCView {
@@ -561,7 +220,7 @@ export interface KCView {
   topic: string;
   masteryPct: number;
   n: number;
-  R: number;
+  R: number; // freshness 0..1
   daysSince: number;
   fresh: boolean;
   f: number;
@@ -572,18 +231,18 @@ export function kcView(now = Date.now()): KCView[] {
   const out: KCView[] = [];
   for (const id of Object.keys(skillStore.kcs)) {
     const kc = skillStore.kcs[id];
-    if (kc.n <= 0) continue;
-    const R = retrievability(kc, now);
+    if (kc.n <= 0 || !kc.sig.length) continue;
+    const R = freshness(kc, now);
     out.push({
       id,
       label: labelOf(id),
       domain: domainOf(id),
       topic: topicOf(id),
-      masteryPct: Math.round(100 * masteryFrac(kc, now)),
+      masteryPct: Math.round(100 * masteryOf(kc)),
       n: kc.n,
       R,
       daysSince: kc.lastSeen ? Math.floor((now - kc.lastSeen) / DAY) : 0,
-      fresh: R >= 0.7,
+      fresh: R >= 0.5,
       f: Math.round(kc.f),
       provisional: kc.n < 3,
     });
@@ -591,234 +250,84 @@ export function kcView(now = Date.now()): KCView[] {
   return out;
 }
 
-export interface DomainRollup {
-  domain: string;
-  label: string;
-  masteryPct: number | null; // null = not assessed (coverage 0)
-  coverage: number;
-  touched: number;
-  total: number;
-}
-
-export function domainRollup(now = Date.now()): DomainRollup[] {
-  return DOMAINS.map((dom) => {
-    const leaves = KC_DEFS.filter((d) => d.domain === dom.key);
-    let num = 0;
-    let den = 0;
-    let touched = 0;
-    let untouched = 0;
-    for (const d of leaves) {
-      const kc = skillStore.kcs[d.id];
-      if (kc && kc.n > 0) {
-        const cw = confWeight(kc.n);
-        num += masteryFrac(kc, now) * cw;
-        den += cw;
-        touched += 1;
-      } else {
-        untouched += 1;
-      }
-    }
-    num += 0.5 * W0 * untouched;
-    den += W0 * untouched;
-    const mastery = touched === 0 ? null : num / den;
-    return {
-      domain: dom.key,
-      label: dom.label,
-      masteryPct: mastery === null ? null : Math.round(100 * mastery),
-      coverage: leaves.length ? touched / leaves.length : 0,
-      touched,
-      total: leaves.length,
-    };
-  });
-}
-
-export function topicRollup(domain: string, now = Date.now()) {
-  const topics = [...new Set(KC_DEFS.filter((d) => d.domain === domain).map((d) => d.topic))];
-  return topics
-    .map((topic) => {
-      const leaves = KC_DEFS.filter((d) => d.domain === domain && d.topic === topic);
-      let num = 0;
-      let den = 0;
-      let touched = 0;
-      let untouched = 0;
-      for (const d of leaves) {
-        const kc = skillStore.kcs[d.id];
-        if (kc && kc.n > 0) {
-          const cw = confWeight(kc.n);
-          num += masteryFrac(kc, now) * cw;
-          den += cw;
-          touched += 1;
-        } else untouched += 1;
-      }
-      num += 0.5 * W0 * untouched;
-      den += W0 * untouched;
-      return {
-        topic,
-        masteryPct: touched === 0 ? null : Math.round(100 * (num / den)),
-        touched,
-        total: leaves.length,
-      };
-    })
-    .filter((t) => t.touched > 0);
-}
-
 export interface RankRow extends KCView {
   score: number;
 }
 
-function ranked(metric: (kc: KCState, v: KCView, now: number) => number, minN: number, now: number): RankRow[] {
+function ranked(metric: (v: KCView) => number, minN: number, now: number): RankRow[] {
   const rows: RankRow[] = [];
   for (const v of kcView(now)) {
-    const kc = skillStore.kcs[v.id];
-    if (kc.n < minN) continue;
-    rows.push({ ...v, score: metric(kc, v, now) });
+    if (v.n < minN) continue;
+    rows.push({ ...v, score: metric(v) });
   }
   return rows.sort((a, b) => b.score - a.score).slice(0, 8);
 }
 
 export function rankings(now = Date.now()) {
-  const cw = (kc: KCState) => confWeight(kc.n);
   return {
-    // Genuinely weak skills (low display mastery), lightly tie-broken by staleness.
-    drill: ranked((kc, v) => (1 - v.masteryPct / 100) * cw(kc) * (0.7 + 0.3 * (1 - v.R)), 2, now),
+    // Genuinely weak skills (low mastery), lightly tie-broken by staleness.
+    drill: ranked((v) => (1 - v.masteryPct / 100) * (0.7 + 0.3 * (1 - v.R)), 2, now),
     // Strong but going stale, the refresh list.
-    fading: ranked((kc, v) => (v.masteryPct / 100) * (1 - v.R) * cw(kc), 2, now),
+    fading: ranked((v) => (v.masteryPct / 100) * (1 - v.R), 2, now),
     // Confident strengths.
-    strongest: ranked((kc, v) => (v.masteryPct / 100) * cw(kc), 3, now),
+    strongest: ranked((v) => (v.masteryPct / 100) * Math.min(1, v.n / 5), 3, now),
   };
 }
 
 export interface PracticeRec {
-  drill: RankRow | null; // weakest touched skill worth practising now (learn / strengthen)
-  review: RankRow | null; // strongest skill going stale, worth a refresh before it fades
+  drill: RankRow | null; // weakest touched skill worth practising now
+  review: RankRow | null; // strongest skill going stale, worth a refresh
 }
 
-// Turn the mastery estimate into an actual recommendation of what to practise next. `drill` is the
-// weakest skill you have touched, `review` the strongest one going stale. This is the thin
-// controller that makes the estimator STEER rather than only report. (A prerequisite ordering would
-// later refine "weakest" into "weakest you are ready for"; that DAG does not exist yet.)
 export function recommendPractice(now = Date.now()): PracticeRec {
   const r = rankings(now);
   return { drill: r.drill[0] ?? null, review: r.fading[0] ?? null };
 }
 
 export function skillSummary(now = Date.now()) {
-  const dom = domainRollup(now);
-  const touchedDomains = dom.filter((d) => d.touched > 0);
-  const coveredKCs = Object.values(skillStore.kcs).filter((k) => k.n > 0).length;
-  const ranked2 = [...touchedDomains].sort((a, b) => (a.masteryPct ?? 0) - (b.masteryPct ?? 0));
-  let rusty = 0;
-  for (const id of Object.keys(skillStore.kcs)) {
-    const kc = skillStore.kcs[id];
-    if (kc.n <= 0) continue;
-    if (sigma((kc.theta - dTarget()) * confWeight(kc.n)) >= 0.6 && retrievability(kc, now) < 0.6) rusty += 1;
+  const views = kcView(now);
+  const byDomain = new Map<string, { sum: number; touched: number }>();
+  for (const v of views) {
+    const d = byDomain.get(v.domain) ?? { sum: 0, touched: 0 };
+    d.sum += v.masteryPct;
+    d.touched += 1;
+    byDomain.set(v.domain, d);
   }
+  const rollup = DOMAINS.filter((d) => byDomain.has(d.key)).map((d) => {
+    const agg = byDomain.get(d.key)!;
+    return {
+      domain: d.key,
+      label: d.label,
+      masteryPct: Math.round(agg.sum / agg.touched),
+      touched: agg.touched,
+      total: KC_DEFS.filter((k) => k.domain === d.key).length,
+    };
+  });
+  const ordered = [...rollup].sort((a, b) => a.masteryPct - b.masteryPct);
   return {
-    coveredKCs,
+    coveredKCs: views.length,
     totalKCs: KC_DEFS.length,
-    domainsTouched: touchedDomains.length,
+    domainsTouched: rollup.length,
     totalDomains: DOMAINS.length,
-    weakest: ranked2[0] ?? null,
-    strongest: ranked2.length ? ranked2[ranked2.length - 1] : null,
-    rusty,
+    weakest: ordered[0] ?? null,
+    strongest: ordered.length ? ordered[ordered.length - 1] : null,
+    rusty: views.filter((v) => v.masteryPct >= 60 && v.daysSince > 14).length,
   };
-}
-
-export function trajectory(domain: string, now = Date.now()) {
-  const rows = skillStore.log.filter((r) => r.domain === domain).sort((a, b) => a.day - b.day);
-  if (rows.length < 2) return [] as { day: number; masteryPct: number; cov: number }[];
-  const byDay = new Map(rows.map((r) => [r.day, r]));
-  const firstDay = rows[0].day;
-  const today = Math.floor(now / DAY);
-  const out: { day: number; masteryPct: number; cov: number }[] = [];
-  let last = rows[0];
-  for (let day = firstDay; day <= today; day += 1) {
-    const r = byDay.get(day);
-    if (r) last = r;
-    out.push({ day, masteryPct: Math.round(100 * last.mastery), cov: last.cov });
-  }
-  return out;
-}
-
-// Overall mastery trajectory: every touched domain's daily snapshot forward-filled,
-// then averaged into one line. Pure read over skillStore.log — no rating logic, just the
-// per-domain snapshots the estimator already writes, aggregated the same way the bar
-// chart shows them (equal weight per touched domain).
-export function overallTrajectory(now = Date.now()) {
-  const log = skillStore.log;
-  if (log.length < 2) return [] as { day: number; masteryPct: number; cov: number }[];
-  const byDomain = new Map<string, Map<number, DomainSnapshot>>();
-  let firstDay = Infinity;
-  for (const r of log) {
-    let days = byDomain.get(r.domain);
-    if (!days) byDomain.set(r.domain, (days = new Map()));
-    days.set(r.day, r);
-    if (r.day < firstDay) firstDay = r.day;
-  }
-  const today = Math.floor(now / DAY);
-  const last = new Map<string, DomainSnapshot>(); // forward-filled per domain
-  const out: { day: number; masteryPct: number; cov: number }[] = [];
-  for (let day = firstDay; day <= today; day += 1) {
-    for (const [dom, days] of byDomain) {
-      const r = days.get(day);
-      if (r) last.set(dom, r);
-    }
-    let m = 0;
-    let c = 0;
-    for (const r of last.values()) {
-      m += r.mastery;
-      c += r.cov;
-    }
-    const k = last.size;
-    if (k > 0) out.push({ day, masteryPct: Math.round((100 * m) / k), cov: c / k });
-  }
-  return out.length >= 2 ? out : [];
-}
-
-function upsertSnapshots(obs: KCObservation[], now: number): void {
-  const day = Math.floor(now / DAY);
-  const domains = new Set(obs.map((o) => domainOf(o.id)));
-  const roll = domainRollup(now);
-  for (const dkey of domains) {
-    const dr = roll.find((r) => r.domain === dkey);
-    if (!dr || dr.masteryPct === null) continue;
-    const existing = skillStore.log.find((r) => r.day === day && r.domain === dkey);
-    if (existing) {
-      existing.mastery = dr.masteryPct / 100;
-      existing.cov = dr.coverage;
-    } else {
-      skillStore.log.push({ day, domain: dkey, mastery: dr.masteryPct / 100, cov: dr.coverage });
-    }
-  }
-  // Evict whole oldest days (not single rows) so a day's domains stay together.
-  while (skillStore.log.length > MAX_SNAPSHOTS) {
-    let oldest = Infinity;
-    for (const r of skillStore.log) if (r.day < oldest) oldest = r.day;
-    for (let i = skillStore.log.length - 1; i >= 0; i -= 1) if (skillStore.log[i].day === oldest) skillStore.log.splice(i, 1);
-  }
 }
 
 export function resetSkills(): void {
   for (const k of Object.keys(skillStore.kcs)) delete skillStore.kcs[k];
-  skillStore.log.splice(0, skillStore.log.length);
-  skillStore.diffHist.splice(0, skillStore.diffHist.length, 0, 0, 0, 0, 0, 0, 0);
-  Object.assign(skillStore.g, freshG());
-  skillStore.ratingLog.splice(0, skillStore.ratingLog.length);
-  skillStore.recentDomains.splice(0, skillStore.recentDomains.length);
-  skillStore.announcedRank = 0;
+  skillStore.solvedDay = 0;
+  skillStore.solvedCount = 0;
   persist();
 }
 
 if (typeof window !== 'undefined') {
   (window as unknown as { __nlSkills: unknown }).__nlSkills = {
     all: () => skillStore.kcs,
-    domains: () => domainRollup(),
     rankings: () => rankings(),
     recommend: () => recommendPractice(),
-    trajectory: (d: string) => trajectory(d),
-    overall: () => overallTrajectory(),
     summary: () => skillSummary(),
-    diffHist: () => skillStore.diffHist.slice(),
     reset: resetSkills,
   };
 }
