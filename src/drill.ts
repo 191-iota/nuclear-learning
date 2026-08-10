@@ -1,6 +1,7 @@
 import { cleanText, createCompletion } from '@/api';
 import { recordUsage } from '@/stores/usage';
 import { labelOf, levelOf } from '@/kc';
+import { settings } from '@/stores/settings';
 
 /**
  * Generates ONE practice problem targeted at a weak skill, on demand. This closes the
@@ -10,7 +11,10 @@ import { labelOf, levelOf } from '@/kc';
  * matching problem. One cheap text-only gpt-5.4-mini call turns the recommendation into an
  * actual problem to copy onto paper, where the normal grading loop takes over.
  */
-const DRILL_MODEL = 'gpt-5.4-mini';
+// The cheap text-only helpers (lesson card, drill, archive index) share one
+// background model, set in Presets (`api.backgroundModel`). Their reasoning efforts
+// stay per-job below, since each is tuned to the work rather than to the tier.
+const backgroundModel = (): string => settings.api.backgroundModel || 'gpt-5.4-mini';
 
 const DRILL_SCHEMA = {
   type: 'object',
@@ -46,7 +50,7 @@ export async function generateDrill(skillId: string, masteryPct: number): Promis
     ].join('\n');
     const resp = await createCompletion(
       {
-        model: DRILL_MODEL,
+        model: backgroundModel(),
         // Reasoning tokens count against this budget; headroom so a fiddly clean-numbers
         // search can never truncate the JSON.
         max_completion_tokens: 4000,
@@ -65,7 +69,7 @@ export async function generateDrill(skillId: string, masteryPct: number): Promis
     const u = (resp as any)?.usage ?? {};
     recordUsage({
       mode: 'drill',
-      model: DRILL_MODEL,
+      model: backgroundModel(),
       role: 'drill',
       input: u.prompt_tokens ?? 0,
       output: u.completion_tokens ?? 0,
@@ -79,7 +83,7 @@ export async function generateDrill(skillId: string, masteryPct: number): Promis
     if (!problem) return null;
     return { task, problem, skillLabel: label };
   } catch (err) {
-    console.warn('[nuclear-math] drill generation failed:', err);
+    console.warn('[nuclear-learning] drill generation failed:', err);
     return null;
   }
 }

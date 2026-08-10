@@ -1,5 +1,6 @@
 import { cleanText, createCompletion } from '@/api';
 import { recordUsage } from '@/stores/usage';
+import { settings } from '@/stores/settings';
 
 /**
  * Writes one tailored review card from a corrected mistake. The live grading loop
@@ -11,7 +12,10 @@ import { recordUsage } from '@/stores/usage';
  * question that isolates the slip and withholds the answer), so it runs at HIGH reasoning effort.
  * Used both when a lesson is first captured and to rebuild older cards.
  */
-const CARD_MODEL = 'gpt-5.4-mini';
+// The cheap text-only helpers (lesson card, drill, archive index) share one
+// background model, set in Presets (`api.backgroundModel`). Their reasoning efforts
+// stay per-job below, since each is tuned to the work rather than to the tier.
+const backgroundModel = (): string => settings.api.backgroundModel || 'gpt-5.4-mini';
 
 const CARD_SCHEMA = {
   type: 'object',
@@ -92,7 +96,7 @@ async function writeCard(
   try {
     const resp = await createCompletion(
       {
-        model: CARD_MODEL,
+        model: backgroundModel(),
         // High-effort reasoning counts against this budget; 2500 silently truncated the
         // card (finish_reason length -> unparseable -> lesson lost) on hard slips.
         max_completion_tokens: 8000,
@@ -109,7 +113,7 @@ async function writeCard(
     const u = (resp as any)?.usage ?? {};
     recordUsage({
       mode: usageMode,
-      model: CARD_MODEL,
+      model: backgroundModel(),
       role: 'lesson',
       input: u.prompt_tokens ?? 0,
       output: u.completion_tokens ?? 0,
@@ -142,7 +146,7 @@ async function writeCard(
     if ((!front && !back) || bareExpr || (!!front && norm(front) === norm(back))) return null;
     return { covered: false, front, back };
   } catch (err) {
-    console.warn('[nuclear-math] card generation failed:', err);
+    console.warn('[nuclear-learning] card generation failed:', err);
     return null;
   }
 }

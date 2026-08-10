@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ConfirmButton from '@/components/ConfirmButton.vue';
 import { computed, ref } from 'vue';
 import {
   usage,
@@ -62,9 +63,7 @@ function tip(s: ProblemBar): string {
 }
 
 function clearLog(): void {
-  if (hasRecords.value && confirm(`Delete all ${usage.records.length} usage records? This cannot be undone.`)) {
-    clearUsage();
-  }
+  if (hasRecords.value) clearUsage();
 }
 // Under-bar numbers: label every column when they are single problems and few enough to
 // read, otherwise anchor just the first and last so the axis stays clean.
@@ -82,7 +81,7 @@ function barLabel(s: ProblemBar, i: number): string {
       <h2>Usage</h2>
       <span class="muted mono" style="font-size: 0.72rem">estimated, priced per model</span>
       <span class="spacer" />
-      <button class="ghost danger" :disabled="!hasRecords" @click="clearLog">Clear log</button>
+      <ConfirmButton ghost label="Clear log" :disabled="!hasRecords" title="Delete every usage record" @confirm="clearLog" />
     </div>
 
     <template v-if="summary.scans > 0">

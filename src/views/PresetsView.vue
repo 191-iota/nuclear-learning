@@ -1,21 +1,26 @@
 <script setup lang="ts">
+import ConfirmButton from '@/components/ConfirmButton.vue';
 import { modes, addMode, removeMode, resetModes } from '@/stores/modes';
 import { settings, resetSettings } from '@/stores/settings';
 import { MODELS, EFFORTS } from '@/models';
 
 const STYLES = ['spoken', 'chime', 'both'];
 
-function resetEngine(): void {
-  if (confirm('Reset all engine settings to their defaults?')) resetSettings();
+/**
+ * Model and effort are typed, not picked. The shipped list is offered as
+ * suggestions through a datalist, but anything can be entered, so a model released
+ * after this build is usable the day it lands instead of waiting for a code change.
+ *
+ * The price table is the one catch worth saying out loud: modelInfo() falls back to
+ * the first entry for an id it does not know, so the Usage tab would bill a custom
+ * model at that rate without ever mentioning it.
+ */
+const fallbackLabel = MODELS[0].label;
+
+function unknownModel(id: string): boolean {
+  return Boolean(id?.trim()) && !MODELS.some((m) => m.id === id);
 }
 
-function deleteMode(id: string, label: string): void {
-  if (confirm(`Delete the "${label}" preset? This cannot be undone.`)) removeMode(id);
-}
-
-function resetPresetList(): void {
-  if (confirm('Reset all presets to their defaults? Custom presets will be deleted.')) resetModes();
-}
 </script>
 
 <template>
@@ -39,30 +44,25 @@ function resetPresetList(): void {
           <div class="eng-row">
             <div class="field span-2">
               <label>Solve model</label>
-              <select v-model="settings.api.solveModel">
-                <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
-              </select>
+              <input v-model="settings.api.solveModel" list="nl-models" type="text" spellcheck="false" autocapitalize="off" placeholder="model id" />
+              <span v-if="unknownModel(settings.api.solveModel)" class="fieldwarn">Not in the price table, so Usage prices it as {{ fallbackLabel }}.</span>
             </div>
             <div class="field span-2">
               <label>Verify model (cheap)</label>
-              <select v-model="settings.api.verifyModel">
-                <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
-              </select>
+              <input v-model="settings.api.verifyModel" list="nl-models" type="text" spellcheck="false" autocapitalize="off" placeholder="model id" />
+              <span v-if="unknownModel(settings.api.verifyModel)" class="fieldwarn">Not in the price table, so Usage prices it as {{ fallbackLabel }}.</span>
             </div>
             <div class="field span-2">
               <label>Confirm model</label>
-              <select v-model="settings.api.confirmModel">
-                <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
-              </select>
+              <input v-model="settings.api.confirmModel" list="nl-models" type="text" spellcheck="false" autocapitalize="off" placeholder="model id" />
+              <span v-if="unknownModel(settings.api.confirmModel)" class="fieldwarn">Not in the price table, so Usage prices it as {{ fallbackLabel }}.</span>
             </div>
           </div>
 
           <div class="eng-row">
             <div class="field span-2">
               <label>Verify effort</label>
-              <select v-model="settings.api.verifyEffort">
-                <option v-for="e in EFFORTS" :key="e" :value="e">{{ e }}</option>
-              </select>
+              <input v-model="settings.api.verifyEffort" list="nl-efforts" type="text" spellcheck="false" placeholder="effort" />
             </div>
             <div class="field span-2">
               <label>Max tokens</label>
@@ -73,19 +73,33 @@ function resetPresetList(): void {
           <div class="eng-row">
             <div class="field span-2">
               <label>Chat model (Notes mode)</label>
-              <select v-model="settings.api.chatModel">
-                <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
-              </select>
+              <input v-model="settings.api.chatModel" list="nl-models" type="text" spellcheck="false" autocapitalize="off" placeholder="model id" />
+              <span v-if="unknownModel(settings.api.chatModel)" class="fieldwarn">Not in the price table, so Usage prices it as {{ fallbackLabel }}.</span>
             </div>
             <div class="field span-2">
               <label>Chat effort</label>
-              <select v-model="settings.api.chatEffort">
-                <option v-for="e in EFFORTS" :key="e" :value="e">{{ e }}</option>
-              </select>
+              <input v-model="settings.api.chatEffort" list="nl-efforts" type="text" spellcheck="false" placeholder="effort" />
             </div>
             <div class="field span-2">
               <label>Page grid (0 = off)</label>
               <input v-model.number="settings.tablet.gridSize" type="number" min="0" max="100" step="5" />
+            </div>
+          </div>
+
+          <div class="eng-row">
+            <div class="field span-2">
+              <label>Note transcription model</label>
+              <input v-model="settings.api.noteModel" list="nl-models" type="text" spellcheck="false" autocapitalize="off" placeholder="model id" />
+              <span v-if="unknownModel(settings.api.noteModel)" class="fieldwarn">Not in the price table, so Usage prices it as {{ fallbackLabel }}.</span>
+            </div>
+            <div class="field span-2">
+              <label>Transcription effort</label>
+              <input v-model="settings.api.noteEffort" list="nl-efforts" type="text" spellcheck="false" placeholder="effort" />
+            </div>
+            <div class="field span-2">
+              <label>Background model (cards, drills, index)</label>
+              <input v-model="settings.api.backgroundModel" list="nl-models" type="text" spellcheck="false" autocapitalize="off" placeholder="model id" />
+              <span v-if="unknownModel(settings.api.backgroundModel)" class="fieldwarn">Not in the price table, so Usage prices it as {{ fallbackLabel }}.</span>
             </div>
           </div>
 
@@ -144,6 +158,34 @@ function resetPresetList(): void {
             </div>
           </div>
 
+          <div class="eng-row">
+            <div class="field span-2">
+              <label>Hold before undo repeats (ms)</label>
+              <input v-model.number="settings.hold.delayMs" type="number" min="0" max="2000" step="50" />
+            </div>
+            <div class="field span-2">
+              <label>Repeat starts at ({{ settings.hold.startRate }}/s)</label>
+              <input v-model.number="settings.hold.startRate" type="range" min="1" max="30" step="1" />
+            </div>
+            <div class="field span-2">
+              <label>Speeds up to ({{ settings.hold.topRate }}/s)</label>
+              <input v-model.number="settings.hold.topRate" type="range" min="1" max="60" step="1" />
+            </div>
+            <div class="field span-2">
+              <label>Reaching top speed after ({{ settings.hold.rampSec }}s)</label>
+              <input v-model.number="settings.hold.rampSec" type="range" min="0" max="8" step="0.1" />
+            </div>
+          </div>
+
+          <div class="row" style="margin-top: 0.4rem">
+            <span class="muted" style="font-size: 0.72rem">
+              Holding Z (or the pen's barrel button) peels strokes off one after another and gets
+              quicker the longer you hold, so a short press can still stop on a single stroke while a
+              long one clears a board. Set the top speed equal to the starting speed for the old flat
+              rate.
+            </span>
+          </div>
+
           <div class="row" style="margin-top: 0.8rem; flex-wrap: wrap; gap: 0.6rem 1rem">
             <label class="toggle">
               <input v-model="settings.ui.autoExpandFeedback" type="checkbox" />
@@ -166,7 +208,7 @@ function resetPresetList(): void {
               come from the model, so the Usage cost is exact per request.
             </span>
             <span class="spacer" />
-            <button class="ghost" @click="resetEngine">Reset engine</button>
+            <ConfirmButton ghost label="Reset engine" confirm-label="Reset it" title="Put every engine setting back to the shipped default" @confirm="resetSettings" />
           </div>
         </div>
       </details>
@@ -201,21 +243,31 @@ function resetPresetList(): void {
           <div class="row" style="margin-top: 0.6rem">
             <span class="muted mono" style="font-size: 0.68rem">{{ mode.id }}</span>
             <span class="spacer" />
-            <button
-              class="ghost danger"
+            <ConfirmButton
+              ghost
+              label="Delete"
               :disabled="modes.length <= 1"
-              @click="deleteMode(mode.id, mode.label)"
-            >
-              Delete
-            </button>
+              :title="`Delete the ${mode.label} preset`"
+              @confirm="removeMode(mode.id)"
+            />
           </div>
         </div>
       </details>
 
       <div class="row" style="margin-top: 0.7rem">
         <span class="spacer" />
-        <button class="ghost" @click="resetPresetList">Reset presets to defaults</button>
+        <ConfirmButton ghost label="Reset presets to defaults" confirm-label="Reset them" title="Custom presets are deleted" @confirm="resetModes" />
       </div>
     </div>
+
+    <!-- Suggestions for the model and effort boxes. A datalist proposes without
+         restricting, so the shipped list stays one keystroke away while any id
+         can still be typed. -->
+    <datalist id="nl-models">
+      <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
+    </datalist>
+    <datalist id="nl-efforts">
+      <option v-for="e in EFFORTS" :key="e" :value="e" />
+    </datalist>
   </section>
 </template>

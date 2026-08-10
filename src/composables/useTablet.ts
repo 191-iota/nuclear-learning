@@ -1,5 +1,23 @@
 import { onBeforeUnmount, reactive, watch, type Ref } from 'vue';
 import { settings } from '@/stores/settings';
+import { holdDue } from '@/composables/holdRepeat';
+import {
+  EXPORT_MARGIN,
+  baseWidth,
+  bucketWidth,
+  drawStrokes,
+  planInkTiles,
+  strokeBounds,
+  tileScale,
+  widthFor,
+  type TabletPoint,
+  type TabletStroke,
+  type TabletZone,
+} from '@/composables/inkExport';
+
+// The stroke model and the paint loop live in inkExport, which the notes store also
+// draws with. Re-exported here so the engine stays the one import a view needs.
+export type { TabletPoint, TabletStroke, TabletZone };
 
 /**
  * Stroke-based ink engine for a graphics tablet (Wacom & friends) drawing straight
@@ -32,33 +50,37 @@ import { settings } from '@/stores/settings';
  *   that exponents, fraction bars, and subscripts never touch the edge.
  */
 
-export interface TabletPoint {
-  x: number;
-  y: number;
-  p: number; // pressure 0..1
-}
-
-export type TabletZone = 'main' | 'scratch';
-
-export interface TabletStroke {
+/**
+ * A picture placed on the surface: a pasted screenshot, a dropped photo. Centre,
+ * size and angle in page units, with the bytes carried inline so a note round-trips
+ * through one blob. Ink is drawn over the top of these.
+ */
+export interface TabletImage {
   id: number;
-  zone: TabletZone;
-  w: number; // base width in page units; pressure modulates around it
-  pts: TabletPoint[];
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
+  src: string; // data URL
+  x: number; // centre
+  y: number;
+  w: number;
+  h: number;
+  rot: number; // radians
 }
 
-type Op = { kind: 'add'; stroke: TabletStroke } | { kind: 'erase'; strokes: TabletStroke[] };
+type Op =
+  | { kind: 'add'; stroke: TabletStroke }
+  | { kind: 'erase'; strokes: TabletStroke[] }
+  | { kind: 'imgAdd'; img: TabletImage }
+  | { kind: 'imgDel'; img: TabletImage }
+  | { kind: 'imgXform'; id: number; before: TabletImage; after: TabletImage };
 
 export interface TabletState {
-  tool: 'pen' | 'eraser' | 'hand'; // hand = drag the surface instead of writing on it
+  // hand = drag the surface; select = pick up the pictures on it
+  tool: 'pen' | 'eraser' | 'hand' | 'select';
   zoomPct: number;
   canUndo: boolean;
   canRedo: boolean;
   hasInk: boolean; // main-zone ink (what grading gates on)
+  hasImages: boolean; // at least one picture placed on the surface
+  hasSelection: boolean; // a picture is picked up, so Delete has a target
 }
 
 export interface UseTabletOptions {
@@ -75,11 +97,7 @@ export interface UseTabletOptions {
 }
 
 const PAGE_H = 1000;
-// Hard ceiling on how far pressure can widen a stroke past its base width. Kept
-// tight: a heavy hand should not turn the configured fine pen into a marker.
-const WIDTH_CAP = 1.2;
 const MAX_UNDO = 200;
-const EXPORT_MARGIN = 30; // page units around the ink, keeps superscripts off the edge
 const MIN_Z = 1;
 const MAX_Z = 8;
 // A board zooms out to a twentieth: a session's worth of notes fits on screen at
@@ -90,10 +108,6 @@ const BOARD_MIN_Z = 0.05;
 const BOARD_PAN_SLACK = PAGE_H;
 // Grid lines closer together than this on screen read as fog, so that pass is skipped.
 const GRID_MIN_PX = 5;
-// Ceiling on a board export's pixel count. A board can be far wider than a page,
-// and scaling its long edge down to the page cap would thin the ink below what the
-// transcriber can read — so board exports stay 1:1 in page units up to this budget.
-const BOARD_MAX_PX = 4_000_000;
 
 export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: UseTabletOptions = {}) {
   const strokes: TabletStroke[] = [];
@@ -111,6 +125,8 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     canUndo: false,
     canRedo: false,
     hasInk: false,
+    hasImages: false,
+    hasSelection: false,
   });
 
   // View: zoom factor over the fit scale, plus the page point at the viewport centre.
@@ -126,11 +142,6 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     if (options.scratch === false) return Infinity;
     const share = Math.min(0.4, Math.max(0, Number(settings.tablet.scratchShare) || 0));
     return share >= 0.05 ? pageW() * (1 - share) : Infinity; // Infinity = no scratch zone
-  }
-
-  function baseWidth(): number {
-    const w = Number(settings.tablet.baseWidth);
-    return Number.isFinite(w) && w > 0 ? Math.min(6, Math.max(0.5, w)) : 1.2;
   }
 
   function context(): CanvasRenderingContext2D | null {
@@ -175,6 +186,16 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
       if (s.minY < b.minY) b.minY = s.minY;
       if (s.maxX > b.maxX) b.maxX = s.maxX;
       if (s.maxY > b.maxY) b.maxY = s.maxY;
+    }
+    // A picture counts as content, so Fit frames it and the board can be panned
+    // around one even before a single stroke is written near it.
+    for (const im of images) {
+      for (const p of imgCorners(im)) {
+        if (p.x < b.minX) b.minX = p.x;
+        if (p.y < b.minY) b.minY = p.y;
+        if (p.x > b.maxX) b.maxX = p.x;
+        if (p.y > b.maxY) b.maxY = p.y;
+      }
     }
     if (backdropRect) {
       b.minX = Math.min(b.minX, backdropRect.x);
@@ -233,53 +254,6 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     });
   }
 
-  // Pressure barely moves the line (mirrors the Neo engine): the resting width IS
-  // the configured width, a heavy hand adds at most WIDTH_CAP. Steeper curves kept
-  // reading as "thicker than the setting says" under real writing pressure.
-  function widthFor(s: TabletStroke, p: number): number {
-    return Math.min(s.w * WIDTH_CAP, Math.max(0.4, s.w * (0.85 + 0.3 * p)));
-  }
-
-  // Bucketed so consecutive segments of near-equal pressure batch into one path.
-  function bucket(w: number): number {
-    return Math.round(w / 0.15) * 0.15;
-  }
-
-  function drawStroke(ctx: CanvasRenderingContext2D, s: TabletStroke): void {
-    const pts = s.pts;
-    if (pts.length === 0) return;
-    if (pts.length === 1) {
-      const r = widthFor(s, pts[0].p) / 2;
-      ctx.beginPath();
-      ctx.arc(pts[0].x, pts[0].y, r, 0, Math.PI * 2);
-      ctx.fill();
-      return;
-    }
-    let bw = -1;
-    let open = false;
-    for (let i = 1; i < pts.length; i += 1) {
-      const w = bucket(widthFor(s, pts[i].p));
-      if (w !== bw) {
-        if (open) ctx.stroke();
-        ctx.beginPath();
-        ctx.lineWidth = w;
-        ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
-        open = true;
-        bw = w;
-      }
-      ctx.lineTo(pts[i].x, pts[i].y);
-    }
-    if (open) ctx.stroke();
-  }
-
-  function drawStrokes(ctx: CanvasRenderingContext2D, list: TabletStroke[]): void {
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.strokeStyle = settings.canvas.strokeColor;
-    ctx.fillStyle = settings.canvas.strokeColor;
-    for (const s of list) drawStroke(ctx, s);
-  }
-
   function cssVar(name: string, fallback: string): string {
     if (typeof document === 'undefined') return fallback;
     const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -334,7 +308,10 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
       if (backdrop && backdropRect) {
         ctx.drawImage(backdrop, backdropRect.x, backdropRect.y, backdropRect.w, backdropRect.h);
       }
+      // Pictures sit under the ink, so writing on top of a screenshot works.
+      drawImages(ctx, images);
       drawStrokes(ctx, strokes);
+      drawSelection(ctx, S);
       if (erasing && lastErase) {
         ctx.beginPath();
         ctx.strokeStyle = 'rgba(177, 73, 47, 0.8)';
@@ -396,7 +373,9 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     if (backdrop && backdropRect) {
       ctx.drawImage(backdrop, backdropRect.x, backdropRect.y, backdropRect.w, backdropRect.h);
     }
+    drawImages(ctx, images);
     drawStrokes(ctx, strokes);
+    drawSelection(ctx, S);
 
     // Eraser ring while erasing, so the hit radius is visible.
     if (erasing && lastErase) {
@@ -447,6 +426,223 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     img.src = dataUrl;
   }
 
+  // ---- pictures on the surface ----
+  //
+  // A screenshot pasted into a note is an OBJECT, not a backdrop: it can be picked
+  // up, resized, turned and thrown away, and ink goes over the top of it. The
+  // backdrop above stays what it always was, a fixed under-layer for notes saved
+  // before strokes were persisted; this is the layer you can actually work with.
+  //
+  // Geometry is centre plus half-extent plus an angle, because that is what makes
+  // rotation and corner-resize simple: every hit test moves the pointer into the
+  // picture's own unrotated frame and asks a rectangle question there.
+
+  const images: TabletImage[] = [];
+  const imgEls = new Map<string, HTMLImageElement>();
+  let selectedImg = 0; // id, 0 = nothing selected
+  let imgDrag:
+    | {
+        pointerId: number;
+        mode: 'move' | 'resize' | 'rotate';
+        corner: number; // which corner is held, for resize
+        startX: number;
+        startY: number;
+        before: TabletImage;
+      }
+    | null = null;
+
+  const HANDLE_PX = 9; // on screen, so handles stay grabbable at any zoom
+  const ROTATE_ARM_PX = 26;
+
+  /** Decoded once per source and kept, so a redraw never waits on the image. */
+  function imgEl(src: string): HTMLImageElement | null {
+    const have = imgEls.get(src);
+    if (have) return have.complete && have.naturalWidth > 0 ? have : null;
+    const el = new Image();
+    el.onload = () => scheduleRender();
+    el.src = src;
+    imgEls.set(src, el);
+    return null;
+  }
+
+  function imageById(id: number): TabletImage | undefined {
+    return images.find((i) => i.id === id);
+  }
+
+  /** The four corners in page space, clockwise from top-left of the unrotated box. */
+  function imgCorners(im: TabletImage): { x: number; y: number }[] {
+    const hw = im.w / 2;
+    const hh = im.h / 2;
+    const cos = Math.cos(im.rot);
+    const sin = Math.sin(im.rot);
+    return [
+      [-hw, -hh],
+      [hw, -hh],
+      [hw, hh],
+      [-hw, hh],
+    ].map(([dx, dy]) => ({ x: im.x + dx * cos - dy * sin, y: im.y + dx * sin + dy * cos }));
+  }
+
+  /** The pointer expressed in the picture's own unrotated frame. */
+  function toLocal(im: TabletImage, x: number, y: number): { x: number; y: number } {
+    const cos = Math.cos(-im.rot);
+    const sin = Math.sin(-im.rot);
+    const dx = x - im.x;
+    const dy = y - im.y;
+    return { x: dx * cos - dy * sin, y: dx * sin + dy * cos };
+  }
+
+  function pointInImage(im: TabletImage, x: number, y: number): boolean {
+    const l = toLocal(im, x, y);
+    return Math.abs(l.x) <= im.w / 2 && Math.abs(l.y) <= im.h / 2;
+  }
+
+  /** Topmost picture under the pointer; later ones are drawn on top, so search back. */
+  function imageAt(x: number, y: number): TabletImage | null {
+    for (let i = images.length - 1; i >= 0; i -= 1) {
+      if (pointInImage(images[i], x, y)) return images[i];
+    }
+    return null;
+  }
+
+  /** Which grip of the selected picture is under the pointer, if any. */
+  function gripAt(im: TabletImage, x: number, y: number, S: number): { mode: 'resize' | 'rotate'; corner: number } | null {
+    const r = HANDLE_PX / S;
+    const corners = imgCorners(im);
+    for (let i = 0; i < 4; i += 1) {
+      if (Math.hypot(x - corners[i].x, y - corners[i].y) <= r) return { mode: 'resize', corner: i };
+    }
+    // The turn grip sits off the top edge, on the picture's own up direction.
+    const arm = ROTATE_ARM_PX / S;
+    const up = { x: Math.sin(im.rot), y: -Math.cos(im.rot) };
+    const hx = im.x + up.x * (im.h / 2 + arm);
+    const hy = im.y + up.y * (im.h / 2 + arm);
+    if (Math.hypot(x - hx, y - hy) <= r) return { mode: 'rotate', corner: 0 };
+    return null;
+  }
+
+  function drawImages(ctx: CanvasRenderingContext2D, list: TabletImage[]): void {
+    for (const im of list) {
+      const el = imgEl(im.src);
+      if (!el) continue;
+      ctx.save();
+      ctx.translate(im.x, im.y);
+      ctx.rotate(im.rot);
+      ctx.drawImage(el, -im.w / 2, -im.h / 2, im.w, im.h);
+      ctx.restore();
+    }
+  }
+
+  /** Selection frame and grips, screen-sized so they do not scale with the zoom. */
+  function drawSelection(ctx: CanvasRenderingContext2D, S: number): void {
+    const im = imageById(selectedImg);
+    if (!im) return;
+    const px = 1 / S;
+    const r = (HANDLE_PX / S) * 0.7;
+    const gold = cssVar('--gold', '#c39a27');
+    ctx.save();
+    ctx.strokeStyle = gold;
+    ctx.lineWidth = 1.5 * px;
+    const c = imgCorners(im);
+    ctx.beginPath();
+    ctx.moveTo(c[0].x, c[0].y);
+    for (let i = 1; i < 4; i += 1) ctx.lineTo(c[i].x, c[i].y);
+    ctx.closePath();
+    ctx.stroke();
+    // Stalk out to the turn grip, so it reads as belonging to this picture.
+    const arm = ROTATE_ARM_PX / S;
+    const up = { x: Math.sin(im.rot), y: -Math.cos(im.rot) };
+    const hx = im.x + up.x * (im.h / 2 + arm);
+    const hy = im.y + up.y * (im.h / 2 + arm);
+    const topMid = { x: (c[0].x + c[1].x) / 2, y: (c[0].y + c[1].y) / 2 };
+    ctx.beginPath();
+    ctx.moveTo(topMid.x, topMid.y);
+    ctx.lineTo(hx, hy);
+    ctx.stroke();
+    ctx.fillStyle = settings.canvas.backgroundColor;
+    for (const p of [...c, { x: hx, y: hy }]) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function selectImage(id: number): void {
+    if (selectedImg === id) return;
+    selectedImg = id;
+    state.hasSelection = id !== 0;
+    scheduleRender();
+  }
+
+  /**
+   * Drop a picture on the surface, sized to sit comfortably in the current view and
+   * centred on it, then select it and switch to the move tool so it can be placed
+   * straight away. Pasting used to leave the editor entirely and make a new note.
+   */
+  function addImage(dataUrl: string): void {
+    const el = new Image();
+    el.onload = () => {
+      const c = canvasRef.value;
+      const S = c ? scale(c) : 1;
+      const viewW = c ? c.width / S : pageW();
+      const viewH = c ? c.height / S : PAGE_H;
+      // Two thirds of the shorter view dimension: big enough to see, small enough
+      // to leave somewhere to write.
+      const k = Math.min((viewW * 0.66) / el.width, (viewH * 0.66) / el.height, 1);
+      const im: TabletImage = {
+        id: nextId++,
+        src: dataUrl,
+        x: view.cx,
+        y: view.cy,
+        w: Math.max(8, el.width * k),
+        h: Math.max(8, el.height * k),
+        rot: 0,
+      };
+      imgEls.set(dataUrl, el);
+      images.push(im);
+      pushOp({ kind: 'imgAdd', img: { ...im } });
+      bump();
+      selectImage(im.id);
+      state.tool = 'select';
+      scheduleRender();
+    };
+    el.src = dataUrl;
+  }
+
+  function deleteSelectedImage(): void {
+    const im = imageById(selectedImg);
+    if (!im) return;
+    images.splice(images.indexOf(im), 1);
+    pushOp({ kind: 'imgDel', img: { ...im } });
+    selectImage(0);
+    bump();
+    scheduleRender();
+  }
+
+  function toggleSelect(): void {
+    state.tool = state.tool === 'select' ? 'pen' : 'select';
+    if (state.tool !== 'select') selectImage(0);
+  }
+
+  function getImages(): TabletImage[] {
+    return JSON.parse(JSON.stringify(images)) as TabletImage[];
+  }
+
+  function setImages(list: TabletImage[]): void {
+    images.length = 0;
+    selectedImg = 0;
+    state.hasSelection = false;
+    for (const im of list) {
+      if (!im?.src || !Number.isFinite(im.w) || !Number.isFinite(im.h)) continue;
+      images.push({ ...im, rot: Number.isFinite(im.rot) ? im.rot : 0 });
+      if (im.id >= nextId) nextId = im.id + 1;
+    }
+    state.hasImages = images.length > 0;
+    scheduleRender();
+  }
+
   function toPage(c: HTMLCanvasElement, clientX: number, clientY: number): TabletPoint {
     const rect = c.getBoundingClientRect();
     const X = ((clientX - rect.left) / Math.max(1, rect.width)) * c.width;
@@ -482,6 +678,9 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     state.canUndo = undoStack.length > 0;
     state.canRedo = redoStack.length > 0;
     state.hasInk = strokes.some((s) => s.zone === 'main');
+    // A board holding only a pasted screenshot is still worth saving.
+    state.hasImages = images.length > 0;
+    if (selectedImg && !imageById(selectedImg)) selectImage(0);
   }
 
   function pushOp(op: Op): void {
@@ -550,7 +749,7 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.strokeStyle = settings.canvas.strokeColor;
-      ctx.lineWidth = bucket(widthFor(s, next.p));
+      ctx.lineWidth = bucketWidth(widthFor(s, next.p));
       ctx.beginPath();
       ctx.moveTo(prev.x, prev.y);
       ctx.lineTo(next.x, next.y);
@@ -639,11 +838,31 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     strokes.sort((a, b) => a.id - b.id); // ids are monotonic, so z-order is restored
   }
 
+  /** Put a picture back where it was, or take it away again. */
+  function restoreImage(img: TabletImage): void {
+    if (!imageById(img.id)) images.push({ ...img });
+    images.sort((a, b) => a.id - b.id); // ids are monotonic, so z-order is restored
+  }
+
+  function dropImage(id: number): void {
+    const i = images.findIndex((x) => x.id === id);
+    if (i >= 0) images.splice(i, 1);
+    if (selectedImg === id) selectImage(0);
+  }
+
+  function applyImage(to: TabletImage): void {
+    const im = imageById(to.id);
+    if (im) Object.assign(im, to);
+  }
+
   function undo(): void {
     const op = undoStack.pop();
     if (!op) return;
     if (op.kind === 'add') removeById(op.stroke.id);
-    else reinsert(op.strokes);
+    else if (op.kind === 'erase') reinsert(op.strokes);
+    else if (op.kind === 'imgAdd') dropImage(op.img.id);
+    else if (op.kind === 'imgDel') restoreImage(op.img);
+    else applyImage(op.before);
     redoStack.push(op);
     bump();
     scheduleRender();
@@ -653,7 +872,10 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     const op = redoStack.pop();
     if (!op) return;
     if (op.kind === 'add') reinsert([op.stroke]);
-    else for (const s of op.strokes) removeById(s.id);
+    else if (op.kind === 'erase') for (const s of op.strokes) removeById(s.id);
+    else if (op.kind === 'imgAdd') restoreImage(op.img);
+    else if (op.kind === 'imgDel') dropImage(op.img.id);
+    else applyImage(op.after);
     undoStack.push(op);
     bump();
     scheduleRender();
@@ -717,12 +939,16 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
 
   // ---- hold-to-repeat undo (pen barrel button) ----
 
-  // Keep the undo button pressed and strokes peel off one after another; a single
-  // click still removes exactly one. Stops on release (up, cancel, or a move that
-  // shows the button no longer down) and when the undo stack runs dry.
-  const HOLD_UNDO_DELAY_MS = 450;
-  const HOLD_UNDO_EVERY_MS = 110;
-  let holdUndo: { pointerId: number; timer: number } | null = null;
+  // Keep the undo button pressed and strokes peel off one after another, faster the
+  // longer it is held (holdRepeat owns the curve); a single click still removes
+  // exactly one. Stops on release (up, cancel, or a move that shows the button no
+  // longer down) and when the undo stack runs dry.
+  //
+  // The timer only asks "is one due yet"; it does not set the pace itself, so it ticks
+  // well under the shortest gap the ramp can reach. Pacing it by the interval instead
+  // would quantise the acceleration to the timer's own resolution.
+  const HOLD_TICK_MS = 10;
+  let holdUndo: { pointerId: number; timer: number; started: number; last: number } | null = null;
 
   function stopHoldUndo(): void {
     if (!holdUndo) return;
@@ -732,16 +958,18 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
 
   function startHoldUndo(pointerId: number): void {
     stopHoldUndo();
-    const started = performance.now();
-    const timer = window.setInterval(() => {
-      if (performance.now() - started < HOLD_UNDO_DELAY_MS) return;
+    const state = { pointerId, timer: 0, started: performance.now(), last: 0 };
+    state.timer = window.setInterval(() => {
+      const now = performance.now();
+      if (!holdDue(state.started, state.last, now)) return;
       if (undoStack.length === 0) {
         stopHoldUndo();
         return;
       }
+      state.last = now;
       undo();
-    }, HOLD_UNDO_EVERY_MS);
-    holdUndo = { pointerId, timer };
+    }, HOLD_TICK_MS);
+    holdUndo = state;
   }
 
   // ---- event handlers ----
@@ -772,6 +1000,38 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     if (e.button === 2 || (e.buttons & 2) !== 0) {
       undo();
       startHoldUndo(e.pointerId);
+      return;
+    }
+    // The move tool: pictures are picked up rather than written on. A grip of the
+    // picture already selected wins over the picture under the pointer, so a corner
+    // that overhangs a neighbour still resizes what you meant.
+    if (state.tool === 'select' && e.button === 0) {
+      const pt = toPage(c, e.clientX, e.clientY);
+      const sel = imageById(selectedImg);
+      const grip = sel ? gripAt(sel, pt.x, pt.y, scale(c)) : null;
+      if (sel && grip) {
+        imgDrag = {
+          pointerId: e.pointerId,
+          mode: grip.mode,
+          corner: grip.corner,
+          startX: pt.x,
+          startY: pt.y,
+          before: { ...sel },
+        };
+        return;
+      }
+      const hit = imageAt(pt.x, pt.y);
+      selectImage(hit ? hit.id : 0);
+      if (hit) {
+        imgDrag = {
+          pointerId: e.pointerId,
+          mode: 'move',
+          corner: 0,
+          startX: pt.x,
+          startY: pt.y,
+          before: { ...hit },
+        };
+      }
       return;
     }
     if (isEraserPointer(e) || state.tool === 'eraser') {
@@ -812,6 +1072,46 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
       scheduleRender();
       return;
     }
+    if (imgDrag && e.pointerId === imgDrag.pointerId) {
+      const b = imgDrag.before;
+      const im = imageById(b.id);
+      if (!im) return;
+      const pt = toPage(c, e.clientX, e.clientY);
+      if (imgDrag.mode === 'move') {
+        im.x = b.x + (pt.x - imgDrag.startX);
+        im.y = b.y + (pt.y - imgDrag.startY);
+      } else if (imgDrag.mode === 'rotate') {
+        const from = Math.atan2(imgDrag.startY - b.y, imgDrag.startX - b.x);
+        const to = Math.atan2(pt.y - b.y, pt.x - b.x);
+        const step = Math.PI / 12; // hold shift for 15 degree stops
+        const rot = b.rot + (to - from);
+        im.rot = e.shiftKey ? Math.round(rot / step) * step : rot;
+      } else {
+        // Resize from the corner opposite the one being dragged, which stays put.
+        // Aspect is locked: a screenshot squashed out of proportion is a ruined one.
+        const anchor = imgCorners(b)[(imgDrag.corner + 2) % 4];
+        const la = toLocal(b, anchor.x, anchor.y);
+        const lp = toLocal(b, pt.x, pt.y);
+        const k = Math.max(
+          Math.abs(lp.x - la.x) / Math.max(1e-6, b.w),
+          Math.abs(lp.y - la.y) / Math.max(1e-6, b.h),
+        );
+        const w = Math.max(12, b.w * k);
+        const h = Math.max(12, b.h * k);
+        const signX = imgDrag.corner === 0 || imgDrag.corner === 3 ? -1 : 1;
+        const signY = imgDrag.corner === 0 || imgDrag.corner === 1 ? -1 : 1;
+        const cx = (signX * w) / 2;
+        const cy = (signY * h) / 2;
+        const cos = Math.cos(b.rot);
+        const sin = Math.sin(b.rot);
+        im.w = w;
+        im.h = h;
+        im.x = anchor.x + cx * cos - cy * sin;
+        im.y = anchor.y + cx * sin + cy * cos;
+      }
+      scheduleRender();
+      return;
+    }
     if (erasing && e.pointerId === erasing.pointerId) {
       for (const ev of coalesced(e)) {
         const pt = toPage(c, ev.clientX, ev.clientY);
@@ -824,9 +1124,25 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     }
   }
 
+  /** One undo step per gesture, and nothing recorded for a drag that moved nothing. */
+  function endImgDrag(): void {
+    if (!imgDrag) return;
+    const b = imgDrag.before;
+    const im = imageById(b.id);
+    imgDrag = null;
+    if (!im) return;
+    if (im.x === b.x && im.y === b.y && im.w === b.w && im.h === b.h && im.rot === b.rot) return;
+    pushOp({ kind: 'imgXform', id: im.id, before: b, after: { ...im } });
+    bump();
+  }
+
   function onPointerUp(e: PointerEvent): void {
     const c = canvasRef.value;
     if (holdUndo && e.pointerId === holdUndo.pointerId) stopHoldUndo();
+    if (imgDrag && e.pointerId === imgDrag.pointerId) {
+      endImgDrag();
+      return;
+    }
     if (panning && e.pointerId === panning.pointerId) {
       panning = null;
       return;
@@ -844,6 +1160,7 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
 
   function onPointerCancel(e: PointerEvent): void {
     if (holdUndo && e.pointerId === holdUndo.pointerId) stopHoldUndo();
+    if (imgDrag && e.pointerId === imgDrag.pointerId) endImgDrag();
     if (panning && e.pointerId === panning.pointerId) panning = null;
     if (erasing && e.pointerId === erasing.pointerId) endErase();
     if (active && e.pointerId === active.pointerId) endStroke();
@@ -993,6 +1310,11 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     lastErase = null;
     backdrop = null;
     backdropRect = null;
+    images.length = 0;
+    imgDrag = null;
+    selectedImg = 0;
+    state.hasSelection = false;
+    state.hasImages = false;
     stopHoldUndo();
     bump();
     redraw();
@@ -1015,17 +1337,22 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
   function exportImage(zone: 'main' | 'all' = 'main'): string {
     const main = zone === 'all' ? strokes.slice() : strokes.filter((s) => s.zone === 'main');
     const bg = zone === 'all' && backdrop && backdropRect ? backdropRect : null;
-    if (main.length === 0 && !bg) return '';
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const s of main) {
-      const inflate = (s.w * WIDTH_CAP) / 2;
-      minX = Math.min(minX, s.minX - inflate);
-      minY = Math.min(minY, s.minY - inflate);
-      maxX = Math.max(maxX, s.maxX + inflate);
-      maxY = Math.max(maxY, s.maxY + inflate);
+    const pics = images.slice();
+    if (main.length === 0 && !bg && pics.length === 0) return '';
+    const ink = strokeBounds(main);
+    let minX = ink ? ink.minX : Infinity;
+    let minY = ink ? ink.minY : Infinity;
+    let maxX = ink ? ink.maxX : -Infinity;
+    let maxY = ink ? ink.maxY : -Infinity;
+    // A pasted screenshot is part of the note, so the transcriber must be shown it
+    // and the crop must reach around it.
+    for (const im of pics) {
+      for (const p of imgCorners(im)) {
+        minX = Math.min(minX, p.x);
+        minY = Math.min(minY, p.y);
+        maxX = Math.max(maxX, p.x);
+        maxY = Math.max(maxY, p.y);
+      }
     }
     if (bg) {
       minX = Math.min(minX, bg.x);
@@ -1040,21 +1367,14 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     const w = Math.max(1, maxX - minX);
     const h = Math.max(1, maxY - minY);
     // Long edge capped by the export setting; scale also capped so a single short
-    // line is not blown up into billboard glyphs (fewer pixels, fewer tokens).
-    let k = Math.min(settings.export.maxEdgePx / Math.max(w, h), 1.6);
-    if (options.board) {
-      // A board's ink can span several pages. Squeezing that long edge into the page
-      // cap would render the handwriting thinner than a pixel and the transcriber
-      // would read nothing, so keep page units 1:1 and bound the total pixels instead.
-      k = Math.min(1.6, Math.max(k, 1));
-      const px = w * h * k * k;
-      if (px > BOARD_MAX_PX) k *= Math.sqrt(BOARD_MAX_PX / px);
-    }
+    // line is not blown up into billboard glyphs (fewer pixels, fewer tokens). One
+    // rule for both surface shapes: a board that outgrows the cap is transcribed as
+    // several per-region images (exportInkTiles), so this image never has to carry a
+    // whole sprawling board's legibility on its own.
+    const k = Math.min(settings.export.maxEdgePx / Math.max(w, h), 1.6);
     const out = document.createElement('canvas');
-    // Rounding DOWN keeps a board export provably inside BOARD_MAX_PX; the pixel it
-    // can cost either edge is a pixel of the crop margin, never of the ink.
-    out.width = Math.max(1, Math.floor(w * k));
-    out.height = Math.max(1, Math.floor(h * k));
+    out.width = Math.max(1, Math.round(w * k));
+    out.height = Math.max(1, Math.round(h * k));
     lastExport = { w: out.width, h: out.height };
     const ctx = out.getContext('2d');
     if (!ctx) return '';
@@ -1062,6 +1382,7 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     ctx.fillRect(0, 0, out.width, out.height);
     ctx.setTransform(k, 0, 0, k, -minX * k, -minY * k);
     if (bg && backdrop) ctx.drawImage(backdrop, bg.x, bg.y, bg.w, bg.h);
+    drawImages(ctx, pics);
     drawStrokes(ctx, main);
     return out.toDataURL('image/jpeg', settings.export.jpegQuality);
   }
@@ -1083,10 +1404,35 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
       lastDown,
       // Which surface shape this is, and how far it has grown.
       board: Boolean(options.board),
+      // Pictures on the surface. "images: 0" right after a paste means the paste
+      // never reached addImage; a count with a selected id means it landed and the
+      // problem is somewhere in drawing or in the view.
+      images: images.length,
+      selectedImage: selectedImg,
+      pictures: images.map((im) => ({
+        id: im.id,
+        x: Math.round(im.x),
+        y: Math.round(im.y),
+        w: Math.round(im.w),
+        h: Math.round(im.h),
+        deg: Math.round((im.rot * 180) / Math.PI),
+        loaded: Boolean(imgEls.get(im.src)?.complete),
+      })),
       bbox: contentBox(),
       view: { z: view.z, cx: Math.round(view.cx), cy: Math.round(view.cy) },
       exportBytes: exportImage().length,
       exportPx: lastExport,
+      // How the transcriber would be shown this surface: one region per image, in
+      // reading order. Answers "why did my note come back garbled" without a network
+      // call, since a board cut into more tiles than expected, or into one tile that
+      // is plainly too big, is visible right here.
+      tiles: planInkTiles(strokes, 'all').map((b) => ({
+        x: Math.round(b.minX),
+        y: Math.round(b.minY),
+        w: Math.round(b.maxX - b.minX),
+        h: Math.round(b.maxY - b.minY),
+        pen: Number((tileScale(b.maxX - b.minX, b.maxY - b.minY) * baseWidth()).toFixed(2)),
+      })),
     });
   }
 
@@ -1130,5 +1476,11 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     getStrokes,
     setStrokes,
     setBackdrop,
+    // Pictures on the surface
+    addImage,
+    deleteSelectedImage,
+    toggleSelect,
+    getImages,
+    setImages,
   };
 }

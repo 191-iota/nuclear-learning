@@ -469,6 +469,16 @@ label {
   gap: 0.25rem;
 }
 
+/* A model id typed by hand that the price table has never heard of. Usage would
+   bill it at the fallback rate, so the field says so rather than being quietly
+   wrong on the one screen that exists to report spend. */
+.fieldwarn {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--gold);
+}
+
 .field-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

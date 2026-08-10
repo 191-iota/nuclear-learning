@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ConfirmButton from '@/components/ConfirmButton.vue';
 import { computed, ref } from 'vue';
 import MathText from '@/components/MathText.vue';
 import {
@@ -46,7 +47,6 @@ function practice(it: ArchivedAufgabe): void {
 }
 
 function onDelete(it: ArchivedAufgabe): void {
-  if (!confirm(`Delete "${it.title || it.problem || 'this entry'}" from the archive?`)) return;
   void removeAufgabe(it.id);
   close();
 }
@@ -165,7 +165,7 @@ function fmtDate(ts: number): string {
             {{ reindexing ? 'Indexing…' : 'Index now' }}
           </button>
           <span class="spacer" />
-          <button class="ghost danger" @click="onDelete(open)">Delete</button>
+          <ConfirmButton ghost label="Delete" title="Remove this entry from the archive" @confirm="onDelete(open)" />
         </div>
       </div>
     </div>

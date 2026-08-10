@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ConfirmButton from '@/components/ConfirmButton.vue';
 import { computed, ref } from 'vue';
 import { rankings, skillSummary, resetSkills } from '@/stores/skills';
 import { generateDrill, type DrillProblem } from '@/drill';
@@ -74,10 +75,8 @@ function toPad(): void {
 }
 
 function reset() {
-  if (confirm('Reset all tracked skill mastery? This cannot be undone.')) {
-    resetSkills();
-    drill.value = null;
-  }
+  resetSkills();
+  drill.value = null;
 }
 </script>
 
@@ -86,7 +85,7 @@ function reset() {
     <div class="page-head">
       <h2>Progress</h2>
       <span class="spacer" />
-      <button v-if="summary.coveredKCs > 0" class="ghost danger" @click="reset">Reset</button>
+      <ConfirmButton v-if="summary.coveredKCs > 0" ghost label="Reset" title="Clear all tracked skill mastery" @confirm="reset" />
     </div>
 
     <template v-if="summary.coveredKCs > 0">

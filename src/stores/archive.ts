@@ -2,6 +2,7 @@ import { reactive, ref } from 'vue';
 import { cleanText, createCompletion } from '@/api';
 import { recordUsage } from '@/stores/usage';
 import { blobGet, blobPut, colDelete, colList, colPut, dbState } from '@/db';
+import { settings } from '@/stores/settings';
 
 /**
  * The Aufgaben archive: every problem the pad has seen, stored and findable again.
@@ -50,7 +51,10 @@ export const archiveStore = reactive({
 export const practiceText = ref('');
 
 const COL = 'archive';
-const INDEX_MODEL = 'gpt-5.4-mini';
+// The cheap text-only helpers (lesson card, drill, archive index) share one
+// background model, set in Presets (`api.backgroundModel`). Their reasoning efforts
+// stay per-job below, since each is tuned to the work rather than to the tier.
+const backgroundModel = (): string => settings.api.backgroundModel || 'gpt-5.4-mini';
 const MAX_AUTO_REINDEX = 8; // per session, so a broken corpus cannot burn tokens forever
 const MIGRATED_KEY = 'nl.archive.migratedToDisk';
 
@@ -117,15 +121,15 @@ async function migrateFromIdb(): Promise<void> {
     }
     db.close();
     localStorage.setItem(MIGRATED_KEY, '1');
-    console.info('[nuclear-math] archive imported from IndexedDB to the file database.');
+    console.info('[nuclear-learning] archive imported from IndexedDB to the file database.');
   } catch (err) {
-    console.warn('[nuclear-math] archive IndexedDB import failed (will retry next boot):', err);
+    console.warn('[nuclear-learning] archive IndexedDB import failed (will retry next boot):', err);
   }
 }
 
 async function init(): Promise<void> {
   if (!dbState.available) {
-    console.warn('[nuclear-math] file database unavailable: the archive will not persist this session.');
+    console.warn('[nuclear-learning] file database unavailable: the archive will not persist this session.');
     archiveStore.ready = true;
     return;
   }
@@ -140,7 +144,7 @@ async function init(): Promise<void> {
     const missing = archiveStore.items.filter((it) => !it.indexed).slice(0, MAX_AUTO_REINDEX);
     for (const it of missing) void indexAufgabe(it.id);
   } catch (err) {
-    console.warn('[nuclear-math] archive unavailable:', err);
+    console.warn('[nuclear-learning] archive unavailable:', err);
     archiveStore.ready = true;
   }
 }
@@ -214,7 +218,7 @@ export async function removeAufgabe(id: string): Promise<void> {
   try {
     if (dbState.available) await colDelete(COL, id);
   } catch (err) {
-    console.warn('[nuclear-math] archive delete failed:', err);
+    console.warn('[nuclear-learning] archive delete failed:', err);
   }
 }
 
@@ -282,7 +286,7 @@ export async function indexAufgabe(id: string): Promise<boolean> {
     }
     const resp = await createCompletion(
       {
-        model: INDEX_MODEL,
+        model: backgroundModel(),
         max_completion_tokens: 3000,
         reasoning_effort: 'low',
         messages: [
@@ -299,7 +303,7 @@ export async function indexAufgabe(id: string): Promise<boolean> {
     const u = (resp as any)?.usage ?? {};
     recordUsage({
       mode: rec.modeId,
-      model: INDEX_MODEL,
+      model: backgroundModel(),
       role: 'index',
       input: u.prompt_tokens ?? 0,
       output: u.completion_tokens ?? 0,
@@ -329,7 +333,7 @@ export async function indexAufgabe(id: string): Promise<boolean> {
     await persistItem(rec);
     return true;
   } catch (err) {
-    console.warn('[nuclear-math] archive indexing failed:', err);
+    console.warn('[nuclear-learning] archive indexing failed:', err);
     return false;
   }
 }

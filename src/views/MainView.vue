@@ -4,6 +4,7 @@ import { modes } from '@/stores/modes';
 import { usePen, type PenDot } from '@/composables/usePen';
 import { useCanvas } from '@/composables/useCanvas';
 import { useTablet } from '@/composables/useTablet';
+import { holdDue } from '@/composables/holdRepeat';
 import { useFeedback } from '@/composables/useFeedback';
 import MathText from '@/components/MathText.vue';
 import { settings } from '@/stores/settings';
@@ -547,7 +548,7 @@ async function archiveCurrent(img: string, verdict: 'correct' | 'open'): Promise
     });
     flashArchive('Archived.');
   } catch (err) {
-    console.warn('[nuclear-math] archive save failed:', err);
+    console.warn('[nuclear-learning] archive save failed:', err);
     flashArchive('Archive failed.');
   }
 }
@@ -585,7 +586,7 @@ function onNoteCapture(): void {
       });
       flashArchive('Noted → Inbox.');
     } catch (err) {
-      console.warn('[nuclear-math] note capture failed:', err);
+      console.warn('[nuclear-learning] note capture failed:', err);
       flashArchive('Note failed.');
     }
   })();
@@ -645,16 +646,17 @@ function isEditableTarget(t: EventTarget | null): boolean {
 
 // Hold-to-repeat for undo/redo: keeping Z (or the pen button mapped to Ctrl/Cmd+Z)
 // pressed peels strokes off one after another instead of demanding one press per
-// stroke. Cadence comes from ONE shared gate fed by two sources, the OS key
-// auto-repeat (e.repeat) and a fallback interval for drivers that hold the key
-// down without repeating it. The gate paces removal to a rate the eye can follow
-// and keeps the two sources from doubling up.
+// stroke, accelerating the longer it is held (holdRepeat owns the curve, Presets
+// owns its numbers). Cadence comes from ONE shared gate fed by two sources, the OS
+// key auto-repeat (e.repeat) and a fallback interval for drivers that hold the key
+// down without repeating it. The gate keeps the two sources from doubling up.
 // The Cmd variant runs WITHOUT the fallback interval: macOS suppresses the plain
 // key's keyup while Cmd is held, so a quick Cmd+Z tap with a lingering Cmd would
 // leave an interval running with no stop signal. For Cmd shortcuts the OS
-// auto-repeat alone drives the hold, which it delivers reliably.
-const HOLD_DELAY_MS = 450; // hold this long before multi-remove starts
-const HOLD_EVERY_MS = 110; // then ~9 strokes/s
+// auto-repeat alone drives the hold, which it delivers reliably, though that also
+// caps them at the OS repeat rate: the ramp's top end belongs to plain Z and to the
+// pen button, both of which drive themselves.
+const HOLD_TICK_MS = 10; // poll rate only; the gap between removals comes from the ramp
 
 let held: {
   key: string;
@@ -667,8 +669,7 @@ let held: {
 function fireHeld(): void {
   if (!held) return;
   const now = performance.now();
-  if (now - held.started < HOLD_DELAY_MS) return;
-  if (now - held.last < HOLD_EVERY_MS) return;
+  if (!holdDue(held.started, held.last, now)) return;
   held.last = now;
   held.action();
 }
@@ -676,7 +677,7 @@ function fireHeld(): void {
 function startHold(key: string, action: () => void, withTimer: boolean): void {
   stopHold();
   held = { key, action, started: performance.now(), last: 0, timer: 0 };
-  if (withTimer) held.timer = window.setInterval(fireHeld, 60);
+  if (withTimer) held.timer = window.setInterval(fireHeld, HOLD_TICK_MS);
 }
 
 function stopHold(): void {

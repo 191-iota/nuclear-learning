@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import ConfirmButton from '@/components/ConfirmButton.vue';
 import MathText from '@/components/MathText.vue';
-import { useTablet, type TabletStroke } from '@/composables/useTablet';
+import { useTablet, type TabletImage, type TabletStroke } from '@/composables/useTablet';
+import { holdDue } from '@/composables/holdRepeat';
 import { makeThumb } from '@/stores/archive';
 import {
   INBOX_ID,
@@ -9,20 +11,31 @@ import {
   addTypedNote,
   deleteFolder,
   deleteNote,
+  docKind,
+  folderById,
   folderPath,
   folderTree,
+  setFolderContext,
+  loadDocxView,
   loadNoteBg,
   loadNoteImage,
+  loadNoteImages,
   loadNoteInk,
+  noteFileUrl,
+  noteWordUrl,
   notesInFolder,
   notesStore,
   reExtractNote,
+  readAsDataUrl,
   renameFolder,
+  saveFileNote,
   saveNoteFromPad,
   searchNotes,
   updateNote,
   updateNoteInk,
+  type DocKind,
   type Note,
+  type NoteFolder,
 } from '@/stores/notes';
 
 // The Notebook: the notes half of Notes mode, purely about capturing and organizing.
@@ -35,9 +48,70 @@ import {
 const selected = ref<string>(''); // '' = all notes
 const query = ref('');
 
+/** An inline field that replaces a row is useless if you have to click it first. */
+const vFocus = {
+  mounted: (el: HTMLInputElement) => {
+    el.focus();
+    el.select();
+  },
+};
+
 const tree = computed(() => folderTree());
 const results = computed(() => searchNotes(query.value, selected.value || undefined));
 const countIn = (folderId: string) => notesInFolder(folderId, true).length;
+
+// ---- the folder tree: collapsible, and it remembers ----
+
+// Folders start open (a tree that hides what you filed is worse than a long one),
+// so only the ids explicitly collapsed are stored. nl.* keys mirror to disk.
+const COLLAPSED_KEY = 'nl.notesCollapsed.v1';
+
+function loadCollapsed(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '[]') as unknown;
+    return new Set(Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+const collapsed = ref(loadCollapsed());
+
+function toggleFolder(id: string): void {
+  if (collapsed.value.has(id)) collapsed.value.delete(id);
+  else collapsed.value.add(id);
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed.value]));
+  } catch {
+    /* storage unavailable, non-fatal */
+  }
+}
+
+const childCount = computed(() => {
+  const m = new Map<string, number>();
+  for (const f of notesStore.folders) {
+    if (f.parentId) m.set(f.parentId, (m.get(f.parentId) ?? 0) + 1);
+  }
+  return m;
+});
+
+/**
+ * The rows actually drawn. folderTree() is a depth-first list with depths, so
+ * everything under a collapsed folder is exactly the run of deeper rows that
+ * follows it.
+ */
+const visibleTree = computed(() => {
+  const out: { folder: NoteFolder; depth: number; kids: number }[] = [];
+  let hideBelow = -1;
+  for (const t of tree.value) {
+    if (hideBelow >= 0 && t.depth > hideBelow) continue;
+    hideBelow = -1;
+    const kids = childCount.value.get(t.folder.id) ?? 0;
+    out.push({ folder: t.folder, depth: t.depth, kids });
+    if (kids && collapsed.value.has(t.folder.id)) hideBelow = t.depth;
+  }
+  return out;
+});
 
 // ---- custom-resizable notebook: pane and window sizes are the user's, persisted ----
 
@@ -145,20 +219,122 @@ function resetWinSize(): void {
   savePane('noteH', 0);
 }
 
+// ---- documents: dropped in, or picked with the button ----
+
+const fileInputRef = ref<HTMLInputElement | null>(null);
+const fileBusy = ref(0);
+const fileError = ref('');
+// Drag events fire again for every child element the pointer crosses, so the
+// highlight counts enter/leave pairs instead of trusting a single leave.
+const dropDepth = ref(0);
+const dragNote = ref(''); // the note being dragged onto a folder, if any
+const dropTarget = ref(''); // the folder row under the pointer
+
+function hasFiles(e: DragEvent): boolean {
+  return Boolean(e.dataTransfer?.types.includes('Files'));
+}
+
+/** File a batch into one folder, one by one, so one bad file cannot stop the rest. */
+async function fileInto(files: FileList | File[] | null, folderId: string): Promise<void> {
+  const list = [...(files ?? [])];
+  if (!list.length) return;
+  fileError.value = '';
+  fileBusy.value += list.length;
+  for (const f of list) {
+    try {
+      const n = await saveFileNote(f, folderId);
+      selected.value = n.folderId;
+    } catch (err) {
+      fileError.value = err instanceof Error ? err.message : String(err);
+      console.warn('[nuclear-learning] filing a document failed:', err);
+    } finally {
+      fileBusy.value -= 1;
+    }
+  }
+}
+
+function pickFiles(): void {
+  fileInputRef.value?.click();
+}
+
+async function onFilePicked(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement;
+  await fileInto(input.files, selected.value || INBOX_ID);
+  input.value = ''; // the same file can be filed again later
+}
+
+function onPaneDragEnter(e: DragEvent): void {
+  if (hasFiles(e)) dropDepth.value += 1;
+}
+
+function onPaneDragOver(e: DragEvent): void {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+}
+
+function onPaneDragLeave(e: DragEvent): void {
+  if (hasFiles(e)) dropDepth.value = Math.max(0, dropDepth.value - 1);
+}
+
+async function onPaneDrop(e: DragEvent): Promise<void> {
+  dropDepth.value = 0;
+  if (!e.dataTransfer?.files.length) return;
+  e.preventDefault();
+  await fileInto(e.dataTransfer.files, selected.value || INBOX_ID);
+}
+
+// A folder row takes both kinds of drag: files from the desktop land in it, and a
+// note dragged out of the grid moves into it.
+function onNoteDragStart(n: Note, e: DragEvent): void {
+  dragNote.value = n.id;
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', n.title || 'note');
+  }
+}
+
+function onFolderDragOver(id: string, e: DragEvent): void {
+  const files = hasFiles(e);
+  if (!files && !dragNote.value) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = files ? 'copy' : 'move';
+  dropTarget.value = id;
+}
+
+async function onFolderDrop(id: string, e: DragEvent): Promise<void> {
+  e.preventDefault();
+  e.stopPropagation();
+  dropTarget.value = '';
+  dropDepth.value = 0;
+  if (e.dataTransfer?.files.length) {
+    await fileInto(e.dataTransfer.files, id);
+    return;
+  }
+  if (dragNote.value) {
+    updateNote(dragNote.value, { folderId: id });
+    dragNote.value = '';
+    selected.value = id;
+  }
+}
+
+function fmtSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+function fileTag(n: Note): string {
+  const ext = n.file?.name.split('.').pop() ?? '';
+  return `${(ext || 'file').toUpperCase().slice(0, 5)} · ${fmtSize(n.file?.size ?? 0)}`;
+}
+
 // ---- clipboard: a copied image pastes straight into the notebook ----
 
 // Cmd+V with an image (screenshot, phone photo, textbook snippet) creates an image
 // note in the selected folder and the background transcriber picks it up exactly
-// like a pad capture. Text pastes keep their default behavior everywhere.
-function fileToDataUrl(f: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result));
-    r.onerror = () => reject(new Error('read failed'));
-    r.readAsDataURL(f);
-  });
-}
-
+// like a pad capture. A pasted picture has no file name, which is why this stays the
+// pad path rather than the document one. Text pastes keep their default behavior.
 async function onPaste(e: ClipboardEvent): Promise<void> {
   const items = e.clipboardData?.items;
   if (!items) return;
@@ -172,39 +348,106 @@ async function onPaste(e: ClipboardEvent): Promise<void> {
   }
   if (!files.length) return;
   e.preventDefault();
+  // With the ink editor open, a pasted picture belongs ON the board being written,
+  // as a thing that can be moved and resized. It used to leave the editor entirely
+  // and make a separate note out of the screenshot.
+  if (inkOpen.value) {
+    for (const f of files) {
+      try {
+        ink.addImage(await readAsDataUrl(f));
+      } catch (err) {
+        console.warn('[nuclear-learning] pasting a picture onto the board failed:', err);
+      }
+    }
+    return;
+  }
   for (const f of files) {
     try {
-      const img = await fileToDataUrl(f);
+      const img = await readAsDataUrl(f);
       const thumb = await makeThumb(img);
       const n = await saveNoteFromPad({ image: img, thumb }, selected.value || INBOX_ID);
       selected.value = n.folderId;
     } catch (err) {
-      console.warn('[nuclear-math] image paste failed:', err);
+      console.warn('[nuclear-learning] image paste failed:', err);
     }
   }
 }
 
 // ---- folder actions ----
 
-function onNewFolder(parentId: string | null): void {
-  const name = prompt(parentId ? 'Subfolder name:' : 'Folder name:');
-  if (name?.trim()) {
-    const f = addFolder(name, parentId);
-    selected.value = f.id;
-  }
+// Naming a folder happens in the tree, in the row the folder will occupy. It used
+// to be window.prompt, which is an OS box with the page's hostname on it and no
+// relation to the app around it.
+
+const newFolderParent = ref<string | null | undefined>(undefined); // undefined = not adding
+const newFolderName = ref('');
+const renamingId = ref('');
+const renameDraft = ref('');
+
+function startNewFolder(parentId: string | null): void {
+  renamingId.value = '';
+  newFolderParent.value = parentId;
+  newFolderName.value = '';
+  if (parentId) collapsed.value.delete(parentId); // a new child must be visible
 }
 
-function onRenameFolder(id: string): void {
-  const f = tree.value.find((t) => t.folder.id === id)?.folder;
-  if (!f) return;
-  const name = prompt('Rename folder:', f.name);
-  if (name?.trim()) renameFolder(id, name);
+function commitNewFolder(): void {
+  const parent = newFolderParent.value;
+  if (parent === undefined) return;
+  const name = newFolderName.value.trim();
+  newFolderParent.value = undefined;
+  newFolderName.value = '';
+  if (!name) return;
+  selected.value = addFolder(name, parent).id;
+}
+
+function cancelNewFolder(): void {
+  newFolderParent.value = undefined;
+  newFolderName.value = '';
+}
+
+function startRename(f: NoteFolder): void {
+  cancelNewFolder();
+  renamingId.value = f.id;
+  renameDraft.value = f.name;
+}
+
+function commitRename(): void {
+  const id = renamingId.value;
+  renamingId.value = '';
+  if (id && renameDraft.value.trim()) renameFolder(id, renameDraft.value);
 }
 
 function onDeleteFolder(id: string): void {
-  if (!confirm('Delete this folder? Its notes and subfolders move one level up.')) return;
   deleteFolder(id);
   if (selected.value === id) selected.value = '';
+}
+
+// ---- what a folder is about: the student's own framing, inherited downwards ----
+
+const ctxOpen = ref(false);
+const folderCtxDraft = ref('');
+let folderCtxTimer: number | undefined;
+
+// Follow the selection, and never clobber a half-typed draft on the way.
+watch(
+  selected,
+  (id) => {
+    if (folderCtxTimer) window.clearTimeout(folderCtxTimer);
+    folderCtxTimer = undefined;
+    folderCtxDraft.value = id ? (folderById(id)?.context ?? '') : '';
+  },
+  { immediate: true },
+);
+
+function onFolderCtxInput(): void {
+  const id = selected.value;
+  if (!id) return;
+  if (folderCtxTimer) window.clearTimeout(folderCtxTimer);
+  folderCtxTimer = window.setTimeout(() => {
+    folderCtxTimer = undefined;
+    setFolderContext(id, folderCtxDraft.value);
+  }, AUTOSAVE_MS);
 }
 
 // ---- the ink editor: writing notes directly, no pad involved ----
@@ -256,6 +499,10 @@ async function continueWriting(n: Note): Promise<void> {
   legacyBg.value = '';
   const strokes = n.hasInk ? ((await loadNoteInk(n.id)) as TabletStroke[] | null) : null;
   if (strokes) ink.setStrokes(strokes);
+  if (n.hasImgs) {
+    const pics = (await loadNoteImages(n.id)) as TabletImage[] | null;
+    if (pics?.length) ink.setImages(pics);
+  }
   if (n.hasBg) {
     const bg = await loadNoteBg(n.id);
     if (bg) ink.setBackdrop(bg);
@@ -274,11 +521,13 @@ async function continueWriting(n: Note): Promise<void> {
 
 function closeInk(): void {
   // The draft stays on the canvas: closing is pausing, saving is the commit.
+  stopHold(); // a key still down when the editor goes away has nothing left to undo
   inkOpen.value = false;
 }
 
 async function saveInk(): Promise<void> {
   if (inkSaving.value) return;
+  stopHold();
   const img = ink.exportImage('all');
   if (!img) {
     closeInk();
@@ -293,6 +542,7 @@ async function saveInk(): Promise<void> {
         image: img,
         thumb,
         strokes: ink.getStrokes(),
+        images: ink.getImages(),
         bg: legacyBg.value || undefined,
       });
       if (editing.folderId !== inkFolder.value) updateNote(editing.id, { folderId: inkFolder.value });
@@ -300,13 +550,16 @@ async function saveInk(): Promise<void> {
       editingNote.value = null;
       legacyBg.value = '';
     } else {
-      const n = await saveNoteFromPad({ image: img, thumb, strokes: ink.getStrokes() }, inkFolder.value);
+      const n = await saveNoteFromPad(
+        { image: img, thumb, strokes: ink.getStrokes(), images: ink.getImages() },
+        inkFolder.value,
+      );
       selected.value = n.folderId;
     }
     ink.clear();
     inkOpen.value = false;
   } catch (err) {
-    console.warn('[nuclear-math] ink note save failed:', err);
+    console.warn('[nuclear-learning] ink note save failed:', err);
   } finally {
     inkSaving.value = false;
   }
@@ -325,6 +578,56 @@ function isEditableTarget(t: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
 
+// Hold-to-repeat undo/redo on the board, the same gate and the same accelerating
+// cadence the math pad uses (holdRepeat owns both). Before it, a held Z here ran at
+// whatever raw rate the keyboard happened to auto-repeat at, with no starting delay
+// and no way to tune it, so clearing a board and nudging off one stroke were the same
+// speed. The Cmd variant runs without the fallback timer for the same macOS reason as
+// on the pad: the plain key's keyup is suppressed while Cmd is held.
+let held: {
+  key: string;
+  action: () => void;
+  started: number;
+  last: number;
+  timer: number;
+} | null = null;
+
+function fireHeld(): void {
+  if (!held) return;
+  const now = performance.now();
+  if (!holdDue(held.started, held.last, now)) return;
+  held.last = now;
+  held.action();
+}
+
+function stopHold(): void {
+  if (!held) return;
+  if (held.timer) window.clearInterval(held.timer);
+  held = null;
+}
+
+function startHold(key: string, action: () => void, withTimer: boolean): void {
+  stopHold();
+  held = { key, action, started: performance.now(), last: 0, timer: 0 };
+  if (withTimer) held.timer = window.setInterval(fireHeld, 10);
+}
+
+/** One press removes exactly one; holding the key hands the rest to the ramp. */
+function tapOrHold(e: KeyboardEvent, k: string, action: () => void): void {
+  if (e.repeat) fireHeld();
+  else {
+    action();
+    startHold(k, action, !e.metaKey);
+  }
+  e.preventDefault();
+}
+
+function onKeyUp(e: KeyboardEvent): void {
+  if (!held) return;
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (k === held.key || k === 'Meta' || k === 'Control' || k === 'Shift' || k === 'Alt') stopHold();
+}
+
 function onKeys(e: KeyboardEvent): void {
   if (e.isComposing) return;
   if (e.key === 'Escape') {
@@ -338,25 +641,25 @@ function onKeys(e: KeyboardEvent): void {
   const mod = e.metaKey || e.ctrlKey;
   const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   if (mod && !e.altKey && k === 'z') {
-    if (e.shiftKey) ink.redo();
-    else ink.undo();
-    e.preventDefault();
+    tapOrHold(e, k, e.shiftKey ? ink.redo : ink.undo);
     return;
   }
   if (mod && !e.altKey && k === 'y') {
-    ink.redo();
-    e.preventDefault();
+    tapOrHold(e, k, ink.redo);
     return;
   }
   if (mod || e.altKey) return;
+  if ((k === 'Delete' || k === 'Backspace') && ink.state.hasSelection) {
+    ink.deleteSelectedImage();
+    e.preventDefault();
+    return;
+  }
   switch (k) {
     case 'z':
-      ink.undo();
-      e.preventDefault();
+      tapOrHold(e, k, ink.undo);
       break;
     case 'y':
-      ink.redo();
-      e.preventDefault();
+      tapOrHold(e, k, ink.redo);
       break;
     case 'e':
       ink.toggleEraser();
@@ -364,6 +667,10 @@ function onKeys(e: KeyboardEvent): void {
       break;
     case 'h':
       ink.toggleHand();
+      e.preventDefault();
+      break;
+    case 'v':
+      ink.toggleSelect();
       e.preventDefault();
       break;
     case '+':
@@ -385,6 +692,10 @@ function onKeys(e: KeyboardEvent): void {
 onMounted(() => {
   window.addEventListener('resize', onWinResize);
   window.addEventListener('keydown', onKeys);
+  window.addEventListener('keyup', onKeyUp);
+  // A key released while the window is not focused is never seen, which would leave
+  // the repeat timer running against a key nobody is holding.
+  window.addEventListener('blur', stopHold);
   window.addEventListener('paste', onPaste);
   document.addEventListener('fullscreenchange', onFsChange);
 });
@@ -392,8 +703,14 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onWinResize);
   window.removeEventListener('keydown', onKeys);
+  window.removeEventListener('keyup', onKeyUp);
+  window.removeEventListener('blur', stopHold);
   window.removeEventListener('paste', onPaste);
   document.removeEventListener('fullscreenchange', onFsChange);
+  stopHold();
+  // Leaving the notebook with a debounce in flight would drop the last keystrokes.
+  if (autosaveTimer && open.value) saveOpen();
+  cancelAutosave();
 });
 
 // ---- note detail ----
@@ -407,41 +724,180 @@ const draftTags = ref('');
 const draftFolder = ref(INBOX_ID);
 const busyExtract = ref(false);
 
+// The dialog edits DRAFTS while the note underneath keeps living: a transcription
+// that started minutes ago can land while the title is being typed. So every draft
+// remembers the value it was opened with, and the two rules below follow from it.
+// Without them, saving a renamed note wrote the whole snapshot back and a transcript
+// that arrived in the meantime was overwritten with the empty field it replaced.
+const baseline = ref({ title: '', text: '', context: '', tags: '', folderId: INBOX_ID });
+
+function snapshot(n: Note): void {
+  baseline.value = {
+    title: n.title,
+    text: n.text,
+    context: n.context,
+    tags: n.tags.join(', '),
+    folderId: n.folderId,
+  };
+}
+
+// A filed document is shown as itself: a picture as a picture, a PDF in the
+// browser's own viewer, a Word file as the HTML the dev server converts it to. Text
+// files need no viewer at all, since their content IS the transcript field.
+const openDoc = ref<{ kind: DocKind; html: string } | null>(null);
+const docBusy = ref(false);
+const hasViewer = computed(() => openDoc.value?.kind === 'word' || openDoc.value?.kind === 'pdf');
+
+// A note with nothing to show beside the text IS its text, so the writing box gets
+// the whole window instead of ten rows in the corner of a two-column layout. That
+// was the whole of "+ Text note": a tile with no editor behind it.
+const isWriting = computed(() => Boolean(open.value) && !openImage.value && !hasViewer.value);
+
+/**
+ * The body field is called what it actually is. "Transcript / content (LLM-seeded)"
+ * was on every note including the ones the user typed themselves, which told them
+ * their own writing belonged to the model.
+ */
+const bodyLabel = computed(() => {
+  const n = open.value;
+  if (!n) return 'Note';
+  if (n.hasImage) return 'Transcript, read from your handwriting';
+  if (n.file) return 'Text from the document';
+  return 'Note';
+});
+
 async function openNote(n: Note): Promise<void> {
+  cancelAutosave();
+  dirty.value = false;
+  savedAt.value = 0;
   open.value = n;
   draftTitle.value = n.title;
   draftText.value = n.text;
   draftContext.value = n.context;
   draftTags.value = n.tags.join(', ');
   draftFolder.value = n.folderId;
+  snapshot(n);
   openImage.value = '';
+  openDoc.value = null;
+  const kind = n.file ? docKind(n.file) : null;
+  if (kind && kind !== 'image') {
+    openDoc.value = { kind, html: '' };
+    if (kind === 'word') {
+      docBusy.value = true;
+      const view = await loadDocxView(n.id);
+      // The dialog may have moved on while the conversion ran.
+      if (open.value?.id === n.id) openDoc.value = { kind, html: view?.html ?? '' };
+      docBusy.value = false;
+    }
+  }
   if (n.hasImage) openImage.value = await loadNoteImage(n.id);
 }
 
+// Rule one: a transcript landing while the dialog is open fills the fields nobody
+// has touched, so the writing appears under the cursor instead of waiting for a
+// reopen. A field being edited is left exactly as typed.
+watch(
+  () => {
+    const n = open.value;
+    return n ? { title: n.title, text: n.text, tags: n.tags.join(', ') } : null;
+  },
+  (now) => {
+    if (!now) return;
+    const base = baseline.value;
+    if (now.title !== base.title && draftTitle.value === base.title) draftTitle.value = now.title;
+    if (now.text !== base.text && draftText.value === base.text) draftText.value = now.text;
+    if (now.tags !== base.tags && draftTags.value === base.tags) draftTags.value = now.tags;
+    base.title = now.title;
+    base.text = now.text;
+    base.tags = now.tags;
+  },
+);
+
+// Rule two: Save writes back only what this dialog actually changed. An untouched
+// field is never sent, so whatever the note has now (a fresh transcript, tags from
+// the background call) survives a save that was only about the title.
 function saveOpen(): void {
   const n = open.value;
   if (!n) return;
-  updateNote(n.id, {
-    title: draftTitle.value.trim(),
-    text: draftText.value,
-    context: draftContext.value,
-    tags: draftTags.value.split(',').map((t) => t.trim()).filter(Boolean),
-    folderId: draftFolder.value,
-  });
+  const base = baseline.value;
+  const patch: Parameters<typeof updateNote>[1] = {};
+  const title = draftTitle.value.trim();
+  if (title !== base.title) patch.title = title;
+  if (draftText.value !== base.text) patch.text = draftText.value;
+  if (draftContext.value !== base.context) patch.context = draftContext.value;
+  if (draftTags.value !== base.tags) {
+    patch.tags = draftTags.value.split(',').map((t) => t.trim()).filter(Boolean);
+  }
+  if (draftFolder.value !== base.folderId) patch.folderId = draftFolder.value;
+  if (Object.keys(patch).length) updateNote(n.id, patch);
+  snapshot(n);
 }
+
+/**
+ * Autosave. Typing commits itself a moment after it stops, so a note is never one
+ * stray click away from being lost and Save stops being a thing to remember.
+ *
+ * It goes through saveOpen, which means it inherits the patch-only rule: an
+ * untouched field is never written back. And the only store call on this path is
+ * updateNote, which writes to disk and nothing else. No transcription, no model
+ * call, no cost. Re-reading the handwriting stays a deliberate button press.
+ */
+const AUTOSAVE_MS = 700;
+let autosaveTimer: number | undefined;
+const savedAt = ref(0);
+const dirty = ref(false);
+
+function cancelAutosave(): void {
+  if (autosaveTimer) window.clearTimeout(autosaveTimer);
+  autosaveTimer = undefined;
+}
+
+function scheduleAutosave(): void {
+  cancelAutosave();
+  dirty.value = true;
+  autosaveTimer = window.setTimeout(() => {
+    autosaveTimer = undefined;
+    if (!open.value) return;
+    saveOpen();
+    dirty.value = false;
+    savedAt.value = Date.now();
+  }, AUTOSAVE_MS);
+}
+
+// A transcript landing mid-edit fills untouched drafts and moves the baseline with
+// them, so that path leaves nothing for saveOpen to patch and costs a no-op write.
+watch([draftTitle, draftText, draftContext, draftTags, draftFolder], () => {
+  if (open.value) scheduleAutosave();
+});
 
 function closeOpen(): void {
   // Closing saves: notes apps autosave, and losing an edited transcript to a stray
   // click would break the trust the transcript exists for.
+  cancelAutosave();
   saveOpen();
+  dirty.value = false;
   open.value = null;
   openImage.value = '';
+  openDoc.value = null;
+}
+
+/**
+ * Enter commits the note and puts the dialog away. From the one-line fields (title,
+ * tags) it is the bare key, the way renaming works everywhere else; from the
+ * transcript and context boxes it takes Cmd/Ctrl, so plain Enter stays a new line.
+ */
+function onDialogKey(e: KeyboardEvent): void {
+  if (e.key !== 'Enter' || e.isComposing) return;
+  const oneLine = e.target instanceof HTMLInputElement && e.target.type !== 'checkbox';
+  if (!oneLine && !(e.metaKey || e.ctrlKey)) return;
+  e.preventDefault();
+  closeOpen();
 }
 
 function onDeleteNote(): void {
   const n = open.value;
   if (!n) return;
-  if (!confirm(`Delete the note "${n.title || 'Untitled'}"?`)) return;
+  cancelAutosave(); // a pending save must not resurrect what was just deleted
   void deleteNote(n.id);
   open.value = null;
 }
@@ -452,9 +908,14 @@ async function onReExtract(): Promise<void> {
   busyExtract.value = true;
   try {
     await reExtractNote(n.id);
-    draftTitle.value = n.title;
+    // Asking for a re-transcribe is asking for the machine's version, so those two
+    // drafts follow the note again however they were edited. The title is not among
+    // them: it is never re-transcribed, and resyncing it would throw away a rename
+    // that has not been saved yet.
     draftText.value = n.text;
     draftTags.value = n.tags.join(', ');
+    baseline.value.text = n.text;
+    baseline.value.tags = n.tags.join(', ');
   } finally {
     busyExtract.value = false;
   }
@@ -470,6 +931,17 @@ function togglePin(n: Note, e: Event): void {
   updateNote(n.id, { pinned: !n.pinned });
 }
 
+/**
+ * Delete straight from the grid. Before this the only Delete lived in the note
+ * dialog's footer, and with a document open that footer sat under a 72vh viewer,
+ * so removing a filed Word file meant opening it and scrolling past the whole
+ * document to find the button.
+ */
+function deleteFromCard(n: Note): void {
+  void deleteNote(n.id);
+  if (open.value?.id === n.id) open.value = null;
+}
+
 function excerpt(n: Note): string {
   return n.text.length > 180 ? `${n.text.slice(0, 180)}…` : n.text;
 }
@@ -483,26 +955,99 @@ function fmtDate(ts: number): string {
   <section class="notes-layout">
     <aside class="ntree" :style="{ width: `${treeW}px` }">
       <button class="ntree-row" :class="{ active: selected === '' }" @click="selected = ''">
+        <span class="twist leaf" />
         <span class="ntree-name">All notes</span>
         <span class="ntree-count mono">{{ notesStore.notes.length }}</span>
       </button>
-      <div v-for="t in tree" :key="t.folder.id" class="ntree-item">
+      <div
+        v-for="t in visibleTree"
+        :key="t.folder.id"
+        class="ntree-item"
+        :class="{ sel: selected === t.folder.id, drop: dropTarget === t.folder.id }"
+        @dragover="onFolderDragOver(t.folder.id, $event)"
+        @dragleave="dropTarget = ''"
+        @drop="onFolderDrop(t.folder.id, $event)"
+      >
+        <!-- Renaming happens in the row itself. -->
+        <div
+          v-if="renamingId === t.folder.id"
+          class="ntree-edit"
+          :style="{ paddingLeft: `${0.2 + t.depth * 0.85}rem` }"
+        >
+          <input
+            v-model="renameDraft"
+            v-focus
+            class="tree-input"
+            aria-label="Folder name"
+            @keydown.enter="commitRename"
+            @keydown.esc="renamingId = ''"
+            @blur="commitRename"
+          />
+        </div>
         <button
+          v-else
           class="ntree-row"
           :class="{ active: selected === t.folder.id }"
-          :style="{ paddingLeft: `${0.6 + t.depth * 0.85}rem` }"
+          :style="{ paddingLeft: `${0.2 + t.depth * 0.85}rem` }"
+          :title="folderPath(t.folder.id)"
           @click="selected = t.folder.id"
         >
+          <span
+            class="twist"
+            :class="{ leaf: !t.kids, open: t.kids && !collapsed.has(t.folder.id) }"
+            :title="t.kids ? 'Show or hide the subfolders' : ''"
+            @click.stop="t.kids && toggleFolder(t.folder.id)"
+            >▸</span
+          >
           <span class="ntree-name">{{ t.folder.name }}</span>
+          <span v-if="t.folder.context" class="ctx-dot" title="This folder carries context for chats">●</span>
           <span class="ntree-count mono">{{ countIn(t.folder.id) }}</span>
         </button>
-        <span v-if="selected === t.folder.id" class="ntree-acts">
-          <button title="New subfolder" @click="onNewFolder(t.folder.id)">+</button>
-          <button v-if="t.folder.id !== INBOX_ID" title="Rename" @click="onRenameFolder(t.folder.id)">✎</button>
-          <button v-if="t.folder.id !== INBOX_ID" title="Delete (contents move up)" @click="onDeleteFolder(t.folder.id)">×</button>
+        <!-- Named actions for the folder you have selected. They used to be a
+             hover-only +, ✎ and × with the meaning hidden in a tooltip. -->
+        <span v-if="selected === t.folder.id && renamingId !== t.folder.id" class="ntree-acts">
+          <button @click="startNewFolder(t.folder.id)">New subfolder</button>
+          <button v-if="t.folder.id !== INBOX_ID" @click="startRename(t.folder)">Rename</button>
+          <ConfirmButton
+            v-if="t.folder.id !== INBOX_ID"
+            label="Delete"
+            confirm-label="Delete it"
+            title="The notes and subfolders inside move one level up; nothing is lost"
+            @confirm="onDeleteFolder(t.folder.id)"
+          />
         </span>
+        <!-- A new subfolder is named where it will live. -->
+        <div
+          v-if="newFolderParent === t.folder.id"
+          class="ntree-edit"
+          :style="{ paddingLeft: `${1.05 + t.depth * 0.85}rem` }"
+        >
+          <input
+            v-model="newFolderName"
+            v-focus
+            class="tree-input"
+            placeholder="Subfolder name"
+            aria-label="New subfolder name"
+            @keydown.enter="commitNewFolder"
+            @keydown.esc="cancelNewFolder"
+            @blur="commitNewFolder"
+          />
+        </div>
       </div>
-      <button class="ghost newfolder" @click="onNewFolder(null)">+ Folder</button>
+      <div v-if="newFolderParent === null" class="ntree-edit">
+        <input
+          v-model="newFolderName"
+          v-focus
+          class="tree-input"
+          placeholder="Folder name"
+          aria-label="New folder name"
+          @keydown.enter="commitNewFolder"
+          @keydown.esc="cancelNewFolder"
+          @blur="commitNewFolder"
+        />
+      </div>
+      <button class="ghost newfolder" @click="startNewFolder(null)">+ Folder</button>
+      <p class="tree-hint">Drop files or drag a note onto a folder to file it there.</p>
     </aside>
 
     <div
@@ -514,13 +1059,28 @@ function fmtDate(ts: number): string {
       @dblclick="resetTreeW"
     />
 
-    <div class="nmain scroll">
+    <div
+      class="nmain scroll"
+      :class="{ dropping: dropDepth > 0 }"
+      @dragenter="onPaneDragEnter"
+      @dragover="onPaneDragOver"
+      @dragleave="onPaneDragLeave"
+      @drop="onPaneDrop"
+    >
       <div class="page-head">
         <h2>{{ selected ? folderPath(selected) : 'Notes' }}</h2>
         <span class="count mono">{{ results.length }}</span>
         <span class="spacer" />
         <button class="ghost" title="Write a note with the pen, right here" @click="openInk">+ Ink note</button>
         <button class="ghost" @click="onNewTypedNote">+ Text note</button>
+        <button
+          class="ghost"
+          title="File a Word document, PDF, or text file into this folder (dropping it works too)"
+          @click="pickFiles"
+        >
+          + File
+        </button>
+        <input ref="fileInputRef" class="hidden-file" type="file" multiple @change="onFilePicked" />
       </div>
 
       <input
@@ -531,27 +1091,80 @@ function fmtDate(ts: number): string {
         aria-label="Search notes"
       />
 
+      <!-- The folder's own background. A note's context says what that page is;
+           this says what the subject is, and it is inherited by everything filed
+           below here. -->
+      <details v-if="selected" class="folder-ctx" :open="ctxOpen" @toggle="ctxOpen = ($event.target as HTMLDetailsElement).open">
+        <summary>
+          What "{{ folderById(selected)?.name }}" is about
+          <span class="ctx-sub">
+            {{ folderCtxDraft.trim() ? 'Rides into every chat that draws on anything filed here' : 'Empty' }}
+          </span>
+        </summary>
+        <textarea
+          v-model="folderCtxDraft"
+          rows="4"
+          class="text-edit ctx-edit"
+          placeholder="What the module is, how it is examined, what past papers looked like, what the lecturer keeps asking. Everything filed in here and below inherits it."
+          @input="onFolderCtxInput"
+        />
+      </details>
+
+      <p v-if="dropDepth > 0" class="dropbar mono">
+        Drop into {{ selected ? folderPath(selected) : 'Inbox' }}, or onto any folder on the left
+      </p>
+      <p v-if="fileBusy" class="filing mono">Filing {{ fileBusy }} document{{ fileBusy === 1 ? '' : 's' }}…</p>
+      <p v-if="fileError" class="filing err" @click="fileError = ''">{{ fileError }} (click to dismiss)</p>
+
       <div v-if="notesStore.notes.length === 0" class="empty">
         No notes yet. "+ Ink note" opens a pen page right here; the Note button on the
-        math pad captures a solving page; "+ Text note" types one. Every ink note is
-        transcribed to searchable text in the background. Organize whenever you feel
-        like it.
+        math pad captures a solving page; "+ Text note" types one. Documents you
+        already have (Word, PDF, text) are dropped straight into a folder or picked
+        with "+ File". Every ink note is transcribed to searchable text in the
+        background, and a Word file brings its own. Organize whenever you feel like it.
       </div>
       <div v-else-if="results.length === 0" class="empty">No match here. Try another word or the All notes view.</div>
 
       <div class="ngrid">
-        <button v-for="n in results" :key="n.id" class="ncard" @click="openNote(n)">
+        <!-- A div, not a button: the card carries real buttons of its own now, and
+             a button inside a button is not valid markup and does not click. -->
+        <div
+          v-for="n in results"
+          :key="n.id"
+          class="ncard"
+          role="button"
+          tabindex="0"
+          draggable="true"
+          @click="openNote(n)"
+          @keydown.enter="openNote(n)"
+          @keydown.space.prevent="openNote(n)"
+          @dragstart="onNoteDragStart(n, $event)"
+          @dragend="dragNote = ''"
+        >
           <img v-if="n.thumb" :src="n.thumb" alt="" class="nthumb" />
+          <span v-else-if="n.file" class="ndoc mono">{{ fileTag(n) }}</span>
+          <!-- Named actions on hover. A card used to carry a single bare ★ and no way
+               to delete at all, which sent every removal through the note dialog. -->
+          <span class="ncard-acts">
+            <button
+              type="button"
+              class="ncard-act"
+              :title="n.pinned ? 'Stop keeping this at the top' : 'Keep this at the top of the list'"
+              @click.stop="togglePin(n, $event)"
+            >
+              {{ n.pinned ? 'Unpin' : 'Pin' }}
+            </button>
+            <ConfirmButton
+              label="Delete"
+              confirm-label="Delete it"
+              :title="`Delete ${n.title || 'this note'}`"
+              @confirm="deleteFromCard(n)"
+            />
+          </span>
           <span class="ncard-body">
             <span class="ntitle-row">
               <span class="ntitle">{{ n.title || (n.hasImage && !n.extracted ? 'Transcribing…' : 'Untitled') }}</span>
-              <span
-                class="pin"
-                :class="{ on: n.pinned }"
-                role="button"
-                :title="n.pinned ? 'Unpin' : 'Pin to top'"
-                @click="togglePin(n, $event)"
-              >★</span>
+              <span v-if="n.pinned" class="pinned-flag" title="Pinned to the top">Pinned</span>
             </span>
             <span v-if="!n.thumb && n.text" class="nexcerpt">{{ excerpt(n) }}</span>
             <span class="nmeta mono">
@@ -562,7 +1175,7 @@ function fmtDate(ts: number): string {
               <span v-for="t in n.tags" :key="t" class="tag">{{ t }}</span>
             </span>
           </span>
-        </button>
+        </div>
       </div>
     </div>
 
@@ -580,7 +1193,7 @@ function fmtDate(ts: number): string {
           </select>
         </label>
         <span class="spacer" />
-        <button :disabled="inkSaving || !ink.state.hasInk" @click="saveInk">
+        <button :disabled="inkSaving || (!ink.state.hasInk && !ink.state.hasImages)" @click="saveInk">
           {{ inkSaving ? 'Saving…' : 'Save note' }}
         </button>
         <button class="ghost" title="Back to the notebook; the draft stays (Esc)" @click="closeInk">Close</button>
@@ -589,7 +1202,11 @@ function fmtDate(ts: number): string {
         <canvas
           ref="inkCanvasRef"
           class="inkpad"
-          :class="{ erasing: ink.state.tool === 'eraser', grabbing: ink.state.tool === 'hand' }"
+          :class="{
+            erasing: ink.state.tool === 'eraser',
+            grabbing: ink.state.tool === 'hand',
+            picking: ink.state.tool === 'select',
+          }"
           aria-label="Note writing area"
         />
         <div class="tooldock" role="toolbar" aria-label="Ink tools">
@@ -609,6 +1226,21 @@ function fmtDate(ts: number): string {
           >
             Hand
           </button>
+          <button
+            :class="{ on: ink.state.tool === 'select' }"
+            title="Pick up pictures (V): drag to move, corners to resize, the grip above to turn. Paste a screenshot with Cmd+V to put one here."
+            @click="ink.toggleSelect()"
+          >
+            Pictures
+          </button>
+          <button
+            v-if="ink.state.hasSelection"
+            class="danger"
+            title="Remove the selected picture (Delete)"
+            @click="ink.deleteSelectedImage()"
+          >
+            Remove picture
+          </button>
           <span class="zoomlvl">{{ ink.state.zoomPct }}%</span>
           <button title="Zoom out (-): the board has no fixed size, so this keeps going" @click="ink.zoomBy(0.8)">−</button>
           <button title="Zoom in (+); ctrl+scroll zooms at the cursor" @click="ink.zoomBy(1.25)">+</button>
@@ -625,43 +1257,103 @@ function fmtDate(ts: number): string {
 
     <!-- Note detail: the image beside its editable transcript. -->
     <div v-if="open" class="ovl" @click.self="closeOpen">
-      <div ref="noteWinRef" class="ovl-card" :style="noteWinStyle" role="dialog" aria-modal="true" aria-label="Note">
+      <div
+        ref="noteWinRef"
+        class="ovl-card"
+        :style="noteWinStyle"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Note"
+        @keydown="onDialogKey"
+      >
         <div class="ovl-head">
           <input v-model="draftTitle" class="title-edit" type="text" placeholder="Title" aria-label="Note title" />
           <button class="x" aria-label="Close" title="Close (saves)" @click="closeOpen">×</button>
         </div>
-        <div class="detail-grid" :class="{ single: !openImage }">
-          <img v-if="openImage" :src="openImage" class="nimg" alt="Handwritten note" />
-          <div class="detail-fields">
-            <label class="f-label ctx-label">Context — yours, the LLM never writes here
+        <div class="ovl-body">
+        <div class="detail-grid" :class="{ single: !openImage && !hasViewer }">
+          <!-- The picture is the way back into the pen: clicking it reopens the note
+               on the board rather than sitting there as a dead thumbnail. -->
+          <button
+            v-if="openImage"
+            class="nimg-btn"
+            title="Click to keep writing on this note"
+            @click="continueWriting(open)"
+          >
+            <img :src="openImage" class="nimg" alt="Handwritten note" />
+            <span class="nimg-hint">Click to keep writing</span>
+          </button>
+          <div v-else-if="openDoc?.kind === 'word'" class="docview">
+            <p v-if="docBusy" class="docnote mono">Reading the document…</p>
+            <div v-else-if="openDoc.html" class="docx" v-html="openDoc.html" />
+            <p v-else class="docnote mono">
+              This one could not be read here. Download it to open it in Word.
+            </p>
+          </div>
+          <iframe
+            v-else-if="openDoc?.kind === 'pdf' && open.file"
+            class="pdfview"
+            :src="noteFileUrl(open)"
+            :title="open.file.name"
+          />
+          <div class="detail-fields" :class="{ writing: isWriting }">
+            <p v-if="open.file" class="filemeta mono">
+              <span class="chip">{{ fileTag(open) }}</span>
+              <span class="fname" :title="open.file.name">{{ open.file.name }}</span>
+              <a
+                v-if="openDoc?.kind === 'word'"
+                :href="noteWordUrl(open)"
+                title="Hand this file to Word itself. Word must be installed; the browser cannot open a .docx, which is why plain Open only ever downloaded it."
+                >Open in Word</a
+              >
+              <a v-else :href="noteFileUrl(open)" target="_blank" rel="noopener">Open</a>
+              <a :href="noteFileUrl(open, true)">Download</a>
+            </p>
+            <label class="f-label ctx-label">Your context, never written by the model
               <textarea
                 v-model="draftContext"
-                rows="4"
+                rows="3"
                 class="text-edit ctx-edit"
                 placeholder="Dump anything: the assignment this belongs to, where it came from, what it is for. Rides into every chat this note is attached to."
               />
             </label>
-            <label class="f-label">Transcript / content (LLM-seeded)
-              <textarea v-model="draftText" rows="10" class="text-edit" />
+            <label class="f-label body-field">{{ bodyLabel }}
+              <textarea
+                v-model="draftText"
+                rows="10"
+                class="text-edit body-edit"
+                :placeholder="isWriting ? 'Start writing. It saves itself.' : ''"
+              />
             </label>
-            <label class="f-label">Tags (LLM-seeded, comma-separated)
-              <input v-model="draftTags" type="text" />
-            </label>
-            <label class="f-label">Folder
-              <select v-model="draftFolder">
-                <option v-for="t in tree" :key="t.folder.id" :value="t.folder.id">
-                  {{ ' '.repeat(t.depth * 2) + t.folder.name }}
-                </option>
-              </select>
-            </label>
-            <div v-if="open.text" class="preview">
-              <div class="f-label">Rendered</div>
-              <div class="preview-body"><MathText :text="draftText" /></div>
+            <div class="field-row">
+              <label class="f-label">Tags, comma separated
+                <input v-model="draftTags" type="text" />
+              </label>
+              <label class="f-label">Folder
+                <select v-model="draftFolder">
+                  <option v-for="t in tree" :key="t.folder.id" :value="t.folder.id">
+                    {{ ' '.repeat(t.depth * 2) + t.folder.name }}
+                  </option>
+                </select>
+              </label>
             </div>
+            <details v-if="draftText" class="preview">
+              <summary>Show it rendered, with the maths typeset</summary>
+              <div class="preview-body"><MathText :text="draftText" /></div>
+            </details>
           </div>
         </div>
+        </div>
         <div class="ovl-actions">
-          <button @click="saveOpen">Save</button>
+          <button
+            title="Close this note. Everything is already saved (Enter in a one-line field, or Cmd/Ctrl+Enter anywhere)"
+            @click="closeOpen"
+          >
+            Done
+          </button>
+          <span class="savestate mono" aria-live="polite">
+            {{ dirty ? 'Saving…' : savedAt ? 'Saved' : '' }}
+          </span>
           <button
             v-if="open.hasImage"
             title="Reopen this note in the editor and keep writing; Save updates the note"
@@ -672,7 +1364,7 @@ function fmtDate(ts: number): string {
           <button
             v-if="open.hasImage"
             :disabled="busyExtract"
-            title="Transcribe the image again (overwrites machine-filled fields)"
+            title="Transcribe the image again (overwrites the transcript and tags; your title stays)"
             @click="onReExtract"
           >
             {{ busyExtract ? 'Transcribing…' : 'Re-transcribe' }}
@@ -686,7 +1378,13 @@ function fmtDate(ts: number): string {
             Pinned
           </label>
           <span class="spacer" />
-          <button class="ghost danger" @click="onDeleteNote">Delete</button>
+          <ConfirmButton
+            ghost
+            label="Delete"
+            confirm-label="Delete it"
+            title="Delete this note and its picture"
+            @confirm="onDeleteNote"
+          />
         </div>
         <span
           class="win-grip"
@@ -721,7 +1419,8 @@ function fmtDate(ts: number): string {
 
 .ntree-item {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
 }
 
 .ntree-row {
@@ -735,9 +1434,16 @@ function fmtDate(ts: number): string {
   text-align: left;
   padding: 0.32rem 0.6rem;
   border-radius: var(--radius);
-  font-size: 0.84rem;
+  font-size: 0.88rem;
   color: var(--ink);
   cursor: pointer;
+}
+
+/* "All notes" is a row inside the column itself, not inside a .ntree-item, so the
+   flex:1 above would let it swallow every spare pixel and push the folders to the
+   floor. It is a list entry like the rest. */
+.ntree > .ntree-row {
+  flex: 0 0 auto;
 }
 
 .ntree-row:hover {
@@ -758,27 +1464,35 @@ function fmtDate(ts: number): string {
 }
 
 .ntree-count {
-  font-size: 0.64rem;
+  font-size: 0.74rem;
   color: var(--muted);
 }
 
 .ntree-acts {
   display: flex;
-  gap: 0.1rem;
-  flex: none;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding: 0.2rem 0.2rem 0.4rem 1.55rem;
 }
 
 .ntree-acts button {
-  border: 0;
-  background: none;
+  border: 1px solid var(--border);
+  background: var(--panel);
   color: var(--muted);
-  padding: 0.15rem 0.3rem;
-  font-size: 0.8rem;
+  border-radius: var(--radius);
+  padding: 0.2rem 0.45rem;
+  font-size: 0.78rem;
   cursor: pointer;
 }
 
 .ntree-acts button:hover {
   color: var(--ink);
+  border-color: var(--muted);
+}
+
+.ntree-acts button.danger:hover {
+  color: var(--bad);
+  border-color: var(--bad);
 }
 
 .newfolder {
@@ -806,7 +1520,7 @@ function fmtDate(ts: number): string {
 }
 
 .count {
-  font-size: 0.75rem;
+  font-size: 0.82rem;
   color: var(--muted);
   margin-left: 0.8rem;
 }
@@ -820,7 +1534,7 @@ function fmtDate(ts: number): string {
 
 .empty {
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 0.90rem;
   line-height: 1.6;
   padding: 1.2rem 0.2rem;
   max-width: 44rem;
@@ -834,6 +1548,7 @@ function fmtDate(ts: number): string {
 }
 
 .ncard {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -876,29 +1591,117 @@ function fmtDate(ts: number): string {
 .ntitle {
   flex: 1;
   min-width: 0;
-  font-size: 0.88rem;
+  font-size: 0.92rem;
   font-weight: 600;
   color: var(--ink);
   line-height: 1.35;
 }
 
-.pin {
+.pinned-flag {
   flex: none;
-  color: var(--border);
-  font-size: 0.9rem;
+  font-family: var(--mono);
+  font-size: 0.80rem;
+  color: var(--gold);
+  border: 1px solid var(--gold);
+  border-radius: 999px;
+  padding: 0.02rem 0.4rem;
+}
+
+/* Named card actions, revealed on hover. Keyboard users get them from the focus
+   ring on the card itself, which is why they are also shown on :focus-within. */
+.ncard-acts {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  z-index: 1;
+  display: flex;
+  gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.ncard:hover .ncard-acts,
+.ncard:focus-within .ncard-acts {
+  opacity: 1;
+}
+
+.ncard-act,
+.ncard-acts :deep(.confirm-btn) {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.25rem 0.45rem;
   cursor: pointer;
 }
 
-.pin.on {
-  color: var(--gold);
+.ncard-act:hover,
+.ncard-acts :deep(.confirm-btn:hover) {
+  border-color: var(--muted);
 }
 
-.pin:hover {
+.ncard-acts :deep(.confirm-btn.armed) {
+  color: var(--accent-ink);
+  background: var(--bad);
+  border-color: var(--bad);
+}
+
+/* Inline naming in the tree */
+.ntree-edit {
+  display: flex;
+  padding: 0.1rem 0.2rem;
+}
+
+.tree-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.88rem;
+  padding: 0.28rem 0.5rem;
+}
+
+/* A folder that carries context says so, so the framing behind an answer is never
+   invisible. */
+.ctx-dot {
+  flex: none;
+  font-size: 0.55rem;
   color: var(--gold);
+  line-height: 1;
+}
+
+.folder-ctx {
+  margin: 0 0 0.7rem;
+  border: 1px solid var(--gold);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.folder-ctx > summary {
+  cursor: pointer;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.85rem;
+  color: var(--gold);
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.folder-ctx .ctx-sub {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.folder-ctx textarea {
+  display: block;
+  width: calc(100% - 1.4rem);
+  margin: 0 0.7rem 0.7rem;
 }
 
 .nexcerpt {
-  font-size: 0.78rem;
+  font-size: 0.84rem;
   color: var(--muted);
   line-height: 1.45;
   display: -webkit-box;
@@ -909,7 +1712,7 @@ function fmtDate(ts: number): string {
 }
 
 .nmeta {
-  font-size: 0.66rem;
+  font-size: 0.76rem;
   color: var(--muted);
 }
 
@@ -924,7 +1727,7 @@ function fmtDate(ts: number): string {
 }
 
 .tag {
-  font-size: 0.66rem;
+  font-size: 0.76rem;
   font-family: var(--mono);
   color: var(--muted);
   border: 1px solid var(--border);
@@ -944,25 +1747,51 @@ function fmtDate(ts: number): string {
   padding: 1.2rem;
 }
 
+/* A frame, not a document. Head and footer are fixed and the middle scrolls, so
+   the actions stay on screen whatever is open and however the window is dragged.
+   Before this the whole card scrolled as one block, which put Delete under a
+   72vh-tall document viewer and made resizing look like it did nothing. */
 .ovl-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: 0 14px 48px rgba(0, 0, 0, 0.25);
   width: min(1020px, 96vw);
-  max-height: 88vh;
+  height: min(880px, 88vh);
+  overflow: hidden;
+}
+
+.ovl-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  padding: 0 1.3rem;
+}
+
+/* Each column carries its own scrollbar, so a long document never pushes the
+   fields beside it out of reach. */
+.ovl-body > .detail-grid {
+  flex: 1;
+  min-height: 0;
+}
+
+.ovl-body > .detail-grid > * {
+  min-height: 0;
   overflow-y: auto;
-  padding: 1rem 1.3rem 1.2rem;
 }
 
 .ovl-head {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 0.8rem;
   font-size: 1rem;
   font-weight: 600;
   color: var(--ink);
-  margin-bottom: 0.5rem;
+  padding: 1rem 1.3rem 0.6rem;
 }
 
 .ovl-head .x {
@@ -979,15 +1808,16 @@ function fmtDate(ts: number): string {
   color: var(--ink);
 }
 
-/* Corner grip of the note window: sticky, so it stays put while the card scrolls;
-   the chosen size persists across notes and sessions. */
+/* Corner grip of the note window, anchored to the frame itself rather than to the
+   end of the content, so it is in the same place no matter what is scrolled. */
 .win-grip {
-  position: sticky;
-  bottom: 0;
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  z-index: 2;
   display: block;
   width: 16px;
   height: 16px;
-  margin: 0.3rem -0.9rem -0.9rem auto;
   cursor: nwse-resize;
   touch-action: none;
   opacity: 0.65;
@@ -1028,7 +1858,7 @@ function fmtDate(ts: number): string {
 }
 
 .ink-folder {
-  font-size: 0.7rem;
+  font-size: 0.79rem;
   color: var(--muted);
   display: inline-flex;
   align-items: center;
@@ -1060,6 +1890,15 @@ function fmtDate(ts: number): string {
   cursor: grab;
 }
 
+.inkpad.picking {
+  cursor: default;
+}
+
+.tooldock button.danger {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
 .tooldock {
   position: absolute;
   top: 0.6rem;
@@ -1075,7 +1914,7 @@ function fmtDate(ts: number): string {
 }
 
 .tooldock button {
-  font-size: 0.72rem;
+  font-size: 0.80rem;
   padding: 0.3rem 0.55rem;
 }
 
@@ -1086,7 +1925,7 @@ function fmtDate(ts: number): string {
 
 .tooldock .zoomlvl {
   font-family: var(--mono);
-  font-size: 0.68rem;
+  font-size: 0.78rem;
   color: var(--muted);
   min-width: 3ch;
   text-align: right;
@@ -1105,6 +1944,9 @@ function fmtDate(ts: number): string {
 .detail-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  /* One row exactly as tall as the frame, so the columns scroll instead of the
+     dialog growing past the screen. */
+  grid-template-rows: 100%;
   gap: 0.9rem;
 }
 
@@ -1118,13 +1960,46 @@ function fmtDate(ts: number): string {
   }
 }
 
+/* The picture is the door back to the pen. */
+.nimg-btn {
+  position: relative;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
 .nimg {
   display: block;
   max-width: 100%;
   background: #fff;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  align-self: start;
+}
+
+.nimg-btn:hover .nimg {
+  border-color: var(--gold);
+}
+
+.nimg-hint {
+  position: absolute;
+  left: 0.5rem;
+  bottom: 0.6rem;
+  font-family: var(--mono);
+  font-size: 0.81rem;
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--ink) 82%, transparent);
+  border-radius: var(--radius);
+  padding: 0.22rem 0.5rem;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.nimg-btn:hover .nimg-hint,
+.nimg-btn:focus-visible .nimg-hint {
+  opacity: 1;
 }
 
 .detail-fields {
@@ -1134,21 +2009,57 @@ function fmtDate(ts: number): string {
   min-width: 0;
 }
 
+/* Field labels are sentences in the body font. They were 0.68rem uppercase mono,
+   which reads as a machine tag rather than as a name for the box under it. */
 .f-label {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  font-family: var(--mono);
-  font-size: 0.68rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  gap: 0.3rem;
+  font-family: var(--sans);
+  font-size: 0.82rem;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
   color: var(--muted);
+}
+
+/* A note with no picture and no document beside it IS its text, so the box gets
+   the whole window instead of ten rows in the corner. */
+.detail-fields.writing {
+  height: 100%;
+  overflow: hidden;
+}
+
+.detail-fields.writing .body-field {
+  flex: 1;
+  min-height: 0;
+}
+
+.detail-fields.writing .body-edit {
+  flex: 1;
+  min-height: 10rem;
+  resize: none;
+  font-size: 0.98rem;
+  line-height: 1.65;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.6rem;
+  flex: none;
+}
+
+.savestate {
+  font-size: 0.82rem;
+  color: var(--muted);
+  min-width: 4.5rem;
 }
 
 .text-edit {
   width: 100%;
   resize: vertical;
-  font-size: 0.86rem;
+  font-size: 0.92rem;
   line-height: 1.5;
   font-family: var(--sans);
 }
@@ -1162,11 +2073,28 @@ function fmtDate(ts: number): string {
   border-color: var(--gold);
 }
 
-.preview-body {
+/* Collapsed by default: it is a second copy of what is already in the box above,
+   and open by default it doubled the length of every note. */
+.preview {
+  flex: none;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+
+.preview > summary {
+  cursor: pointer;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.preview[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.preview-body {
   padding: 0.5rem 0.7rem;
-  font-size: 0.88rem;
+  font-size: 0.92rem;
   line-height: 1.55;
   color: var(--ink);
   max-height: 14rem;
@@ -1177,14 +2105,269 @@ function fmtDate(ts: number): string {
 }
 
 .ovl-actions {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  margin-top: 0.9rem;
   flex-wrap: wrap;
+  padding: 0.75rem 1.3rem 0.85rem;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
 }
 
 .pin-toggle {
-  font-size: 0.8rem;
+  font-size: 0.85rem;
+}
+
+/* Folder tree: the twisty, the hover actions, and the drop highlight */
+.twist {
+  flex: none;
+  width: 1.15rem;
+  padding: 0.15rem 0; /* a real hit target, not a 6px glyph */
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--muted);
+  transition: transform 0.12s ease;
+  cursor: pointer;
+}
+
+.twist:hover {
+  color: var(--ink);
+}
+
+.twist.open {
+  transform: rotate(90deg);
+}
+
+.twist.leaf {
+  visibility: hidden;
+  cursor: default;
+}
+
+.ntree-item.drop {
+  outline: 2px dashed var(--gold);
+  outline-offset: -2px;
+  border-radius: var(--radius);
+}
+
+.tree-hint {
+  margin-top: auto;
+  padding: 0.6rem 0.3rem 0.2rem;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* Filing documents */
+.hidden-file {
+  display: none;
+}
+
+.nmain.dropping {
+  outline: 2px dashed var(--gold);
+  outline-offset: -6px;
+  border-radius: var(--radius);
+}
+
+.dropbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 0 0.5rem;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.79rem;
+  color: var(--gold);
+  border: 1px dashed var(--gold);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.filing {
+  margin: 0 0 0.5rem;
+  font-size: 0.80rem;
+  color: var(--muted);
+}
+
+.filing.err {
+  color: var(--gold);
+  cursor: pointer;
+}
+
+/* A filed document has no thumbnail, so the card says what it is instead. */
+.ndoc {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 110px;
+  font-size: 0.79rem;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.filemeta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.filemeta .chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  flex: none;
+}
+
+.filemeta .fname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filemeta a {
+  flex: none;
+  color: var(--gold);
+}
+
+/* Document viewers: a Word file converted by the dev server, a PDF by the browser.
+   Both sit on paper white in either theme, like the handwriting images do. */
+.docview,
+.pdfview {
+  width: 100%;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* The column itself scrolls now (see .ovl-body), so the viewer no longer needs a
+   viewport-relative cap and a scrollbar of its own inside another one. */
+.docview {
+  padding: 0.9rem 1.1rem;
+  color: #1a1a1a;
+  font-size: 0.9rem;
+  line-height: 1.65;
+}
+
+.pdfview {
+  height: 100%;
+  min-height: 24rem;
+  display: block;
+}
+
+.docnote {
+  color: var(--muted);
+  font-size: 0.80rem;
+}
+
+/* The converted markup arrives through v-html, so scoped styles reach it with
+   :deep. It is our own server's output: every character of it is escaped there. */
+.docx :deep(h1),
+.docx :deep(h2),
+.docx :deep(h3),
+.docx :deep(h4) {
+  margin: 1.1em 0 0.4em;
+  line-height: 1.3;
+}
+
+.docx :deep(h1) {
+  font-size: 1.35rem;
+}
+
+.docx :deep(h2) {
+  font-size: 1.15rem;
+}
+
+.docx :deep(h3) {
+  font-size: 1rem;
+}
+
+.docx :deep(h4) {
+  font-size: 0.9rem;
+}
+
+.docx :deep(p) {
+  margin: 0 0 0.5em;
+}
+
+/* Markers are stated outright rather than left to the default, and they are always
+   CSS markers: Word's own bullet characters live in Symbol and Wingdings, whose code
+   points render as empty boxes in a normal font. */
+.docx :deep(ul.docx-list),
+.docx :deep(ol.docx-list) {
+  margin: 0 0 0.6em;
+  padding-left: 1.6em;
+}
+
+.docx :deep(ul.docx-list) {
+  list-style: disc outside;
+}
+
+.docx :deep(ol.docx-list) {
+  list-style: decimal outside;
+}
+
+/* Nested levels get their own marker so depth is readable. */
+.docx :deep(ul.docx-list ul.docx-list) {
+  list-style: circle outside;
+  margin-bottom: 0;
+}
+
+.docx :deep(ul.docx-list ul.docx-list ul.docx-list) {
+  list-style: square outside;
+}
+
+.docx :deep(ol.docx-list ol.docx-list) {
+  margin-bottom: 0;
+}
+
+.docx :deep(.docx-list li) {
+  margin: 0 0 0.18em;
+}
+
+.docx :deep(.docx-list li::marker) {
+  color: #1a1a1a;
+}
+
+.docx :deep(img) {
+  max-width: 100%;
+  height: auto;
+  margin: 0.4em 0;
+}
+
+.docx :deep(table.docx-table) {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  width: 100%;
+}
+
+.docx :deep(table.docx-table td) {
+  border: 1px solid #c9c9c9;
+  padding: 0.25em 0.45em;
+  vertical-align: top;
+}
+
+.docx :deep(table.docx-table td p) {
+  margin: 0;
+}
+
+.docx :deep(.docx-tab) {
+  display: inline-block;
+  width: 1.6em;
+}
+
+.docx :deep(.docx-missing) {
+  color: #8a8a8a;
+  font-style: italic;
+}
+
+.docx :deep(.docx-blank) {
+  min-height: 0.6em;
 }
 </style>

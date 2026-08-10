@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ConfirmButton from '@/components/ConfirmButton.vue';
 import { computed, ref } from 'vue';
 import {
   lessonStore,
@@ -32,14 +33,11 @@ function rebuild() {
 }
 
 function clearAll() {
-  const n = lessonStore.lessons.length;
-  if (confirm(`Delete all ${n} lesson${n === 1 ? '' : 's'}? This cannot be undone.`)) {
-    clearLessons();
-  }
+  clearLessons();
 }
 
 function remove(l: Lesson) {
-  if (confirm('Remove this lesson? This cannot be undone.')) removeLesson(l.id);
+  removeLesson(l.id);
 }
 
 // Review session, active recall over the due cards: show the problem, you try to
@@ -105,7 +103,7 @@ function statusLabel(l: Lesson): string {
       <button v-if="needsCard" class="ghost" :disabled="rebuilding" @click="rebuild">
         {{ rebuilding ? 'Rebuilding…' : `Rebuild ${needsCard} card${needsCard > 1 ? 's' : ''}` }}
       </button>
-      <button v-if="all.length" class="ghost danger" :disabled="reviewing" @click="clearAll">Clear all</button>
+      <ConfirmButton v-if="all.length" ghost label="Clear all" :disabled="reviewing" title="Delete every lesson" @confirm="clearAll" />
     </div>
 
     <!-- REVIEW, one card at a time, recall before reveal -->
@@ -226,9 +224,13 @@ function statusLabel(l: Lesson): string {
           <span class="badge mono" :class="{ mastered: l.box >= MAX_BOX, due: l.due <= nowTick() }">
             {{ statusLabel(l) }}
           </span>
-          <button class="x" title="Remove" :aria-label="`Remove lesson: ${l.problem || l.mistake}`" @click="remove(l)">
-            ×
-          </button>
+          <ConfirmButton
+            ghost
+            label="Remove"
+            confirm-label="Remove it"
+            :title="`Remove lesson: ${l.problem || l.mistake}`"
+            @confirm="remove(l)"
+          />
         </div>
       </div>
     </template>

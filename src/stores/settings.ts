@@ -16,6 +16,11 @@ export type Settings = typeof defaults;
 // scan section, and checks now run on button press. Solve/hint/confirm move to
 // gpt-5.6-terra, which bills exactly what gpt-5.4 does today; the check stays on
 // gpt-5.4-mini, the cheapest capable tier.)
+// NOT bumped for the `hold` section, api.noteModel/noteEffort, or api.backgroundModel
+// (2026-08-06): load() copies a saved section OVER a full clone of the defaults, so a
+// field or a whole section that only exists in the new defaults survives the merge
+// untouched. A purely additive change needs no bump, and bumping for one would throw
+// away every value the user had tuned to buy nothing.
 const KEY = 'nl.settings.v26';
 
 function load(): Settings {
