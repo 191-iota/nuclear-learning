@@ -367,7 +367,7 @@ export function regenerateCards(force = false): Promise<number> {
       }
     }
     console.info(
-      `[nuclear-math] rebuilt ${done}/${targets.length} lesson card(s)${folded ? `, folded ${folded} duplicate(s)` : ''}`,
+      `[nuclear-learning] rebuilt ${done}/${targets.length} lesson card(s)${folded ? `, folded ${folded} duplicate(s)` : ''}`,
     );
     return done;
   })().finally(() => {

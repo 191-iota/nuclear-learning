@@ -228,7 +228,7 @@ label {
   color: var(--muted);
 }
 
-/* The top-level mode switch: Math (the pad world) | Notes (notebook + chat). */
+/* The top-level mode switch: Problem Solving (the pad world) | Notes (notebook + chat). */
 .modeswitch {
   display: flex;
   gap: 0.15rem;
@@ -313,7 +313,8 @@ label {
     gap: 0.2rem;
   }
 
-  .tab {
+  .tab,
+  .mode-btn {
     padding-inline: 0.55rem;
   }
 }

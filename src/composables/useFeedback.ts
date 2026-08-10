@@ -698,7 +698,7 @@ export function useFeedback() {
       // grace hold must not read it as "the slip got fixed" and rescind a held correction.
       // finish_reason 'length' means max_completion_tokens was too small for the reasoning + output.
       console.warn(
-        `[nuclear-math] ${role} reply unusable (finish_reason=${resp.choices?.[0]?.finish_reason}, ${out.length} chars); staying silent. If 'length', raise Max tokens.`,
+        `[nuclear-learning] ${role} reply unusable (finish_reason=${resp.choices?.[0]?.finish_reason}, ${out.length} chars); staying silent. If 'length', raise Max tokens.`,
       );
       return {
         problem: '',
@@ -829,7 +829,7 @@ export function useFeedback() {
     recordMembership(r);
     if (import.meta.env.DEV) {
       console.debug(
-        `[nuclear-math] capture: solution ${r.solution.length} chars, problem=${JSON.stringify(r.problem)}, parts=${JSON.stringify(r.parts)}, statement=${JSON.stringify(capturedStatement)}`,
+        `[nuclear-learning] capture: solution ${r.solution.length} chars, problem=${JSON.stringify(r.problem)}, parts=${JSON.stringify(r.parts)}, statement=${JSON.stringify(capturedStatement)}`,
       );
     }
     return { captured: true, problem: cachedProblem, statement: capturedStatement, parts: r.parts };
@@ -1026,7 +1026,7 @@ export function useFeedback() {
       }
     } catch {
       console.warn(
-        `[nuclear-math] ask reply unusable (finish_reason=${resp.choices?.[0]?.finish_reason}, ${out.length} chars); nothing to show. If 'length', raise Max tokens.`,
+        `[nuclear-learning] ask reply unusable (finish_reason=${resp.choices?.[0]?.finish_reason}, ${out.length} chars); nothing to show. If 'length', raise Max tokens.`,
       );
       return { answer: '', display: '', ungraded: true };
     }

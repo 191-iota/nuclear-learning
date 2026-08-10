@@ -58,7 +58,7 @@ function persist(): void {
   } catch {
     if (!warnedQuota) {
       warnedQuota = true;
-      console.warn('[nuclear-math] obslog persist failed (storage full?); run __nlExport() and clear.');
+      console.warn('[nuclear-learning] obslog persist failed (storage full?); run __nlExport() and clear.');
     }
   }
 }
@@ -72,13 +72,13 @@ export function logEvent(type: ObsEventType, payload: Record<string, unknown>): 
   events.push({ t: Date.now(), type, rater: rater(), ...payload });
   if (events.length >= WARN_AT && !warnedHighWater) {
     warnedHighWater = true;
-    console.warn(`[nuclear-math] obslog at ${events.length}/${MAX_EVENTS} events; __nlExport() before the ring evicts.`);
+    console.warn(`[nuclear-learning] obslog at ${events.length}/${MAX_EVENTS} events; __nlExport() before the ring evicts.`);
   }
   if (events.length > MAX_EVENTS) {
     events.shift();
     if (!warnedEvict) {
       warnedEvict = true;
-      console.warn('[nuclear-math] obslog full: oldest events are now being evicted. Export if you have not.');
+      console.warn('[nuclear-learning] obslog full: oldest events are now being evicted. Export if you have not.');
     }
   }
   persist();
@@ -104,7 +104,7 @@ function exportAll(): void {
   );
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `nuclear-math-export-${new Date().toISOString().slice(0, 10)}.json`;
+  a.download = `nuclear-learning-export-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   URL.revokeObjectURL(a.href);
 }

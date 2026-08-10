@@ -12,10 +12,15 @@ import { theme, toggleTheme } from '@/stores/theme';
 import { lessonStats } from '@/stores/lessons';
 import { practiceText } from '@/stores/archive';
 
-// Two apps in one shell, switched at the top level: MATH is the pad and everything
-// built around it (grading, lessons, archive, drills); NOTES is the general study
-// half (the notebook and the chat, the primary study tool). Each mode keeps its own
-// tab row and remembers its place; Usage and Presets are app-wide and appear in both.
+// Two apps in one shell, switched at the top level: PROBLEM SOLVING is the pad and
+// everything built around it (grading, lessons, archive, drills), shipped tuned for
+// math; NOTES is the general study half (the notebook and the chat, the primary
+// study tool). Each mode keeps its own tab row and remembers its place; Usage and
+// Presets are app-wide and appear in both.
+//
+// The internal id of the solving half stays 'math': it is what `nl.ui.v1` already
+// holds on disk and what config/modes.json calls the shipped grader preset. Only
+// the label moved, so the pipeline and its math tuning are untouched.
 
 type AppMode = 'math' | 'notes';
 type MathTab = 'pad' | 'lessons' | 'archive' | 'progress' | 'usage' | 'presets';
@@ -101,21 +106,23 @@ const dueCount = computed(() => lessonStats().due);
           <path d="M17.58 56.00A28 28 0 0 1 4.00 32.49L22.00 32.17A10 10 0 0 0 26.85 40.57Z" fill="currentColor" />
           <circle cx="32" cy="32" r="4.6" fill="var(--gold)" />
         </svg>
-        <span class="brand-wordmark">nuclear<span class="brand-dim">·math</span></span>
+        <span class="brand-wordmark">nuclear<span class="brand-dim">·learning</span></span>
       </span>
       <nav class="modeswitch" aria-label="Mode">
         <button
           class="mode-btn"
           :class="{ active: mode === 'math' }"
           :aria-current="mode === 'math' ? 'page' : undefined"
+          title="The pad and the pipeline around it: solve, check, hint, finish, then review cards and weak spots. Tuned for math."
           @click="mode = 'math'"
         >
-          Math
+          Problem Solving
         </button>
         <button
           class="mode-btn"
           :class="{ active: mode === 'notes' }"
           :aria-current="mode === 'notes' ? 'page' : undefined"
+          title="The notebook for any subject, and a study chat that has read it"
           @click="mode = 'notes'"
         >
           Notes

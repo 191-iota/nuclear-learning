@@ -33,7 +33,7 @@ export async function restoreMirror(): Promise<void> {
       lastPushed.set(k, v);
     }
   } catch (err) {
-    console.warn('[nuclear-math] disk restore failed:', err);
+    console.warn('[nuclear-learning] disk restore failed:', err);
   }
 }
 
@@ -57,14 +57,14 @@ async function syncNow(keepalive = false): Promise<void> {
     await kvPut(delta, keepalive);
     for (const [k, v] of Object.entries(delta)) lastPushed.set(k, v);
   } catch (err) {
-    console.warn('[nuclear-math] disk sync failed:', err);
+    console.warn('[nuclear-learning] disk sync failed:', err);
   }
 }
 
 export function startMirror(): void {
   if (!dbState.available) {
     console.warn(
-      '[nuclear-math] file database unreachable — state stays in browser storage only. Run the app through `npm run dev` (or preview) for durable data.',
+      '[nuclear-learning] file database unreachable — state stays in browser storage only. Run the app through `npm run dev` (or preview) for durable data.',
     );
     return;
   }
