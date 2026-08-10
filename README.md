@@ -16,36 +16,27 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1a1915?style=flat-square" alt="MIT license"></a>
   <a href="https://vuejs.org"><img src="https://img.shields.io/badge/Vue-3-1a1915?style=flat-square" alt="Vue 3"></a>
   <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/TypeScript-strict-1a1915?style=flat-square" alt="TypeScript strict"></a>
-  <img src="https://img.shields.io/badge/GPT--5.6-vision-c39a27?style=flat-square" alt="GPT-5.6 vision">
-  <img src="https://img.shields.io/badge/Web%20Bluetooth-Chrome%20%2F%20Edge-1a1915?style=flat-square" alt="Web Bluetooth">
 </p>
 
-Two halves share one window. **Notes** is the notebook: school material of any subject, written in ink, typed, pasted from the clipboard, or dropped in as Word and PDF files, with a persistent study chat grounded in it. **Problem Solving** is the pad and the machinery around it, a granular loop that grades your settled work against a solution it worked out first and names the rule a wrong step broke. It ships tuned for school mathematics, down to a map of 125 skills that steers what you practice next.
+Two halves share one window. Notes is the notebook: school material of any subject, written in ink, typed, pasted from the clipboard, or dropped in as Word and PDF files, with a persistent study chat grounded in it. Problem Solving is the pad and the machinery around it, a granular loop that grades your settled work against a solution it worked out first and names the rule a wrong step broke. It ships tuned for school mathematics, down to a map of 125 skills that steers what you practice next.
 
 You write with a Neo Smartpen on paper, its strokes streaming into the browser over Web Bluetooth, or with a graphics tablet straight onto the page. Either way a vision model reads the handwriting directly from the page image, so nothing gets typed and nothing gets photographed. Four buttons drive the loop: problem written, check, hint, finish. An ask box sits beside them for typed questions about the page in hand ("what if I substitute here?"), answered from your own route. Every reply comes back spoken, in Swiss German.
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/pad-dark.png">
-    <img src="docs/pad-light.png" alt="the pad with a handwritten quadratic, and the side panel showing the diagnosis of a sign slip, the statement as read, and the session summary" width="880">
-  </picture>
-  <br><sub>A check mid-problem. The diagnosis names the violated rule; applying it stays your job.</sub>
-</p>
-
 ## Problem Solving
 
-One page is one problem, and the loop around it is deliberately granular. The statement is read and solved once up front, so every later request has something to grade against; checks judge only settled work, hints escalate one rung at a time, and the finish button is what declares a page done. What the page taught you leaves as a review card and as a mark on a skill map. The grader ships as a school mathematics teacher, and a new preset clones it, so the same loop starts from that tuned baseline when you point it at something else.
+One page is one problem, and the loop around it is deliberately granular. The statement is read and solved once up front, so every later request has something to grade against. A check judges only settled work, and a hint escalates one rung at a time. What the page taught you leaves as a review card and as a mark on a skill map. The grader ships as a school mathematics teacher, and a new preset clones it, so the same loop starts from that tuned baseline when you point it at something else.
 
 ### The hint names the rule
 
 Hints climb a ladder, one rung per failed fix, the way a human tutor escalates. The first rung is a diagnosis: what the written step actually did, and the rule that kind of step must keep, stated so it holds with any numbers. If your fix fails, the next rung states the corrected step, that one line with its value and only that line; the steps after it stay yours. The last rung repeats the corrected step and points at the printed solutions. A question mark written next to a flagged spot advances the ladder without waiting for a failed attempt.
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/ladder-dark.svg">
-    <img src="docs/ladder.svg" alt="the three rungs of the hint ladder: first the diagnosis naming the wrong move and the violated rule, then the corrected step, last the printed solutions for the full working" width="820">
-  </picture>
-</p>
+Written out, for one wrong step in 10⁻² × 10³, spoken as words the way the app says them:
+
+| Rung | What comes back |
+|---|---|
+| The diagnosis | "You multiplied the exponents in ten to the minus two times ten cubed; when powers of the same base are multiplied, the exponents are added." |
+| The corrected step | "With the same base the exponents are added: ten to the minus two times ten cubed is ten to the first." |
+| The printed solutions | "The step reads ten to the first; the full working for this problem is in the printed solutions." |
 
 The same ladder serves when nothing is wrong and you are stuck, and it climbs constraints: first the condition your next step must satisfy and where it attaches, then that condition written out with your numbers, then the next line itself. A definition on its own never counts as a hint. Pressing hint again without writing anything goes one level deeper; write something and the judgement starts fresh.
 
@@ -68,13 +59,6 @@ A graphics tablet is the second way in: pick Tablet as the input source and writ
 Every mistake you fix becomes a review card, built from your error and the worked solution already in hand, so what comes back on the spacing schedule is the actual fix. Corrected errors are the most memorable kind of correction, and they fade after about a week; the expanding schedule is what makes the fix permanent.
 
 The ask box feeds the same deck: a typed question is itself a signal about what you hold loosely. When a question reveals a rule you are unsure of, it comes back as a recall card on that rule; when it reaches for a technique adjacent to your route, it comes back as a small practice task on a fresh instance. Casual questions produce nothing. Cards are written on the underlying rule in textbook terms, and knowledge the deck already tests is not added twice.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/lessons-dark.png">
-    <img src="docs/lessons-light.png" alt="the Lessons tab: due, learning, and mastered counts, and a list of review cards each built from one corrected mistake" width="880">
-  </picture>
-</p>
 
 ### Weak spots over scores
 
@@ -105,13 +89,6 @@ One disk is not a backup, so `npm run backup` mirrors that folder to a server of
 ### Cost you can see
 
 The strong model carries solve, hints, and the finish; the cheap one carries the repeated middle checks. The Usage tab prices every request from per-model rates pinned in `src/models.ts` and shows where the money went, per purpose and per problem.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/usage-dark.png">
-    <img src="docs/usage-light.png" alt="the Usage tab: estimated cost, token totals, spend by purpose and by model, and a per-problem cost chart" width="880">
-  </picture>
-</p>
 
 ## How it works
 
