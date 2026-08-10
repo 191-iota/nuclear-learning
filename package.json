@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "backup": "bash scripts/backup.sh push",
+    "backup:check": "bash scripts/backup.sh check",
+    "backup:pull": "bash scripts/backup.sh pull",
+    "backup:list": "bash scripts/backup.sh list"
   },
   "dependencies": {
     "@types/katex": "^0.16.8",

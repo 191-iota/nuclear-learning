@@ -1,9 +1,26 @@
 node_modules
-dist
-.env
-.env.local
-.DS_Store
-*.local
 .vite
-# the local file database: personal data, never in the repo
+
+# A build has the OpenAI key baked into it (the browser sends the key itself), so
+# dist is as sensitive as .env and never belongs in the repo.
+dist
+
+# Secrets. Every .env variant is out; only the example is tracked.
+.env
+.env.*
+!.env.example
+
+# The local file database: notes, transcripts, chats, and the documents filed into
+# folders. Personal data, and the only directory here that is irreplaceable.
 data/
+data-restored-*/
+backups/
+
+# Editor and OS litter
+.DS_Store
+Thumbs.db
+*.local
+*.log
+.idea/
+.vscode/
+*.swp
