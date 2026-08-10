@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
+import { docxMedia, docxToHtml } from './docx';
 
 /**
  * The local file database, served by the dev server itself. Everything the app must
@@ -25,6 +26,9 @@ import type { Plugin } from 'vite';
  *   DELETE /api/db/col/:col/:id     → removes item + its blob
  *   GET    /api/db/blob/:col/:id    → text body (a data URL)
  *   PUT    /api/db/blob/:col/:id    → text body (a data URL)
+ *   GET    /api/db/file/:col/:id    → the same blob as RAW BYTES with its own
+ *                                     content-type (?name= names it, ?dl=1 downloads)
+ *   GET    /api/db/docx/:col/:id    → { html, text } for a stored Word document
  */
 
 const COLS = new Set(['archive', 'notes', 'notefolders', 'chats']);
@@ -53,6 +57,26 @@ function send(res: ServerResponse, status: number, body: string, type = 'applica
   res.statusCode = status;
   res.setHeader('content-type', `${type}; charset=utf-8`);
   res.end(body);
+}
+
+/**
+ * Blobs are stored as data URLs (one text file per blob, readable and greppable).
+ * Documents want their bytes back: a PDF has to reach the browser's own viewer, and
+ * a .docx has to reach the reader in ./docx.
+ */
+function decodeDataUrl(s: string): { mime: string; bytes: Buffer } {
+  const m = /^data:([^;,]*)(;base64)?,/.exec(s);
+  if (!m) return { mime: 'application/octet-stream', bytes: Buffer.from(s, 'utf8') };
+  const body = s.slice(m[0].length);
+  return {
+    mime: m[1] || 'application/octet-stream',
+    bytes: m[2] ? Buffer.from(body, 'base64') : Buffer.from(decodeURIComponent(body), 'utf8'),
+  };
+}
+
+/** Quotes and control characters out: the name rides in a Content-Disposition header. */
+function safeName(name: string): string {
+  return name.replace(/[^\w.\- ()]+/g, '_').slice(0, 120) || 'document';
 }
 
 function writeAtomic(file: string, content: string): void {
@@ -159,6 +183,67 @@ export function localDb(dataDir: string): Plugin {
         }
       }
 
+      // A stored document, served as itself: the browser's PDF viewer and the
+      // Download link both need real bytes and a real content-type, which a data URL
+      // in a text file cannot give them.
+      if (parts[0] === 'file' && parts[1] && COLS.has(parts[1]) && parts[2] && ID_RE.test(parts[2]) && method === 'GET') {
+        const file = path.join(colDir(parts[1]), `${parts[2]}.blob`);
+        if (!fs.existsSync(file)) {
+          send(res, 404, JSON.stringify({ error: 'not found' }));
+          return true;
+        }
+        const { mime, bytes } = decodeDataUrl(fs.readFileSync(file, 'utf8'));
+        const name = safeName(url.searchParams.get('name') ?? parts[2]);
+        res.statusCode = 200;
+        res.setHeader('content-type', mime);
+        res.setHeader('content-length', String(bytes.length));
+        res.setHeader(
+          'content-disposition',
+          `${url.searchParams.get('dl') ? 'attachment' : 'inline'}; filename="${name}"`,
+        );
+        res.end(bytes);
+        return true;
+      }
+
+      if (parts[0] === 'docx' && parts[1] && COLS.has(parts[1]) && parts[2] && ID_RE.test(parts[2]) && method === 'GET') {
+        const file = path.join(colDir(parts[1]), `${parts[2]}.blob`);
+        if (!fs.existsSync(file)) {
+          send(res, 404, JSON.stringify({ error: 'not found' }));
+          return true;
+        }
+        try {
+          const { bytes } = decodeDataUrl(fs.readFileSync(file, 'utf8'));
+          // Pictures stay in the archive and are fetched one by one from the route
+          // below, so the converted HTML is kilobytes even for an illustrated thesis.
+          const view = docxToHtml(bytes, `/api/db/docmedia/${parts[1]}/${parts[2]}?p=`);
+          send(res, 200, JSON.stringify(view));
+        } catch (err) {
+          send(res, 422, JSON.stringify({ error: String(err) }));
+        }
+        return true;
+      }
+
+      if (parts[0] === 'docmedia' && parts[1] && COLS.has(parts[1]) && parts[2] && ID_RE.test(parts[2]) && method === 'GET') {
+        const file = path.join(colDir(parts[1]), `${parts[2]}.blob`);
+        const inner = url.searchParams.get('p') ?? '';
+        if (!fs.existsSync(file)) {
+          send(res, 404, JSON.stringify({ error: 'not found' }));
+          return true;
+        }
+        const { bytes } = decodeDataUrl(fs.readFileSync(file, 'utf8'));
+        const media = docxMedia(bytes, inner);
+        if (!media) {
+          send(res, 404, JSON.stringify({ error: 'no such picture' }));
+          return true;
+        }
+        res.statusCode = 200;
+        res.setHeader('content-type', media.mime);
+        res.setHeader('content-length', String(media.bytes.length));
+        res.setHeader('cache-control', 'private, max-age=300');
+        res.end(media.bytes);
+        return true;
+      }
+
       send(res, 404, JSON.stringify({ error: 'unknown route' }));
       return true;
     } catch (err) {
@@ -176,7 +261,7 @@ export function localDb(dataDir: string): Plugin {
   };
 
   return {
-    name: 'nuclear-math-localdb',
+    name: 'nuclear-learning-localdb',
     configureServer(server) {
       attach(server.middlewares);
     },

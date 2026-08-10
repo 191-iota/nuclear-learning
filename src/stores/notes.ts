@@ -2,6 +2,9 @@ import { reactive } from 'vue';
 import { cleanText, createCompletion } from '@/api';
 import { recordUsage } from '@/stores/usage';
 import { blobGet, blobPut, colDelete, colList, colPut, dbState } from '@/db';
+import { settings } from '@/stores/settings';
+import { makeThumb } from '@/stores/archive';
+import { exportInkTiles, type TabletStroke } from '@/composables/inkExport';
 
 /**
  * Notes: a personal notebook beside the math loop, on the conventions real note
@@ -9,11 +12,14 @@ import { blobGet, blobPut, colDelete, colList, colPut, dbState } from '@/db';
  * one home of a note (nested subfolders), a small set of tags for cross-cutting
  * themes, full-text search, pinning, and editable titles.
  *
+ * A note can also be a document you already have: Word files, PDFs and text files
+ * are dropped into a folder and kept beside the handwritten ones (see saveFileNote).
+ *
  * A note can be anything, math or not. Handwritten pad captures carry their image,
- * and one background vision call transcribes each into TEXT (title, transcript,
- * tags, language). The transcript is the point: the ask request attaches notes as
- * compact text, so referring to a folder of notes costs a few hundred tokens
- * instead of a hundred screenshots.
+ * and one background vision call transcribes each into TEXT (transcript, tags,
+ * language; never the title, which stays the student's). The transcript is the
+ * point: the ask request attaches notes as compact text, so referring to a folder
+ * of notes costs a few hundred tokens instead of a hundred screenshots.
  *
  * Storage is the dev server's file database (data/notes/*, data/notefolders/*):
  * real files, safe from browser-data wipes.
@@ -25,6 +31,21 @@ export interface NoteFolder {
   id: string;
   name: string;
   parentId: string | null; // null = root
+  /**
+   * The folder's OWN background, written by the student and never by a model: what
+   * the module is, how it is examined, what past papers looked like, what the
+   * lecturer keeps asking. It rides into every chat that draws on anything filed
+   * here, and it is inherited down the tree, so a subfolder answers with its
+   * parent's framing as well as its own. A note's context says what that page is;
+   * a folder's context says what the subject is.
+   */
+  context?: string;
+}
+
+export interface NoteFile {
+  name: string;
+  mime: string;
+  size: number; // the original file's bytes, not the base64 the blob holds
 }
 
 export interface Note {
@@ -32,6 +53,8 @@ export interface Note {
   ts: number; // created
   edited: number;
   folderId: string;
+  // Named by hand or not at all: transcription never writes here, so a note keeps
+  // the name it was given even when its transcript arrives long afterwards.
   title: string;
   text: string; // the transcript / typed body — machine-seeded, what ask requests attach
   // The student's OWN field, never touched by extraction: assignment background,
@@ -40,9 +63,13 @@ export interface Note {
   context: string;
   tags: string[];
   pinned: boolean;
-  source: 'pad' | 'typed';
+  source: 'pad' | 'typed' | 'file';
   thumb: string; // data URL preview for pad notes ('' for typed)
   hasImage: boolean;
+  // A document filed into the notebook (Word, PDF, text, anything): the bytes live
+  // in the note's blob exactly like a pad image, and these three fields say what
+  // they are. Absent on notes that were written rather than filed.
+  file?: NoteFile;
   // Strokes stored beside the image (<id>-ink blob): the note can be reopened in
   // the editor and continued, instead of being a dead snapshot.
   hasInk?: boolean;
@@ -50,6 +77,9 @@ export interface Note {
   // backdrop layer (<id>-bg blob) under the new strokes, so nothing old is lost on
   // later edits.
   hasBg?: boolean;
+  // Pictures placed on the board (pasted screenshots and the like), stored as their
+  // own blob (<id>-img) so the strokes blob stays small and text-shaped.
+  hasImgs?: boolean;
   extracted: boolean; // transcript ready (typed notes are born extracted)
   lang?: string;
 }
@@ -57,7 +87,10 @@ export interface Note {
 export const INBOX_ID = 'inbox';
 const NOTES_COL = 'notes';
 const FOLDERS_COL = 'notefolders';
-const EXTRACT_MODEL = 'gpt-5.4-mini';
+// The transcriber is the one background model worth choosing deliberately: it reads
+// handwriting, so a cheaper tier shows up as misread words rather than as a slower
+// answer. Picked in Presets (`api.noteModel`), defaulting to the cheapest capable one.
+const extractModel = (): string => settings.api.noteModel || 'gpt-5.4-mini';
 const MAX_AUTO_EXTRACT = 8; // failed extractions retried per session, bounded
 
 export const notesStore = reactive({
@@ -106,10 +139,10 @@ async function init(): Promise<void> {
       }
       notesStore.notes = notes.sort((a, b) => b.ts - a.ts);
     } catch (err) {
-      console.warn('[nuclear-math] notes load failed:', err);
+      console.warn('[nuclear-learning] notes load failed:', err);
     }
   } else {
-    console.warn('[nuclear-math] file database unavailable: notes will not persist this session.');
+    console.warn('[nuclear-learning] file database unavailable: notes will not persist this session.');
   }
   // The Inbox always exists: quick capture must never ask where to file first.
   if (!notesStore.folders.some((f) => f.id === INBOX_ID)) {
@@ -195,6 +228,31 @@ export function addFolder(name: string, parentId: string | null): NoteFolder {
   return f;
 }
 
+export function setFolderContext(id: string, context: string): void {
+  const f = folderById(id);
+  if (!f) return;
+  f.context = context;
+  void persistFolder(f);
+}
+
+/**
+ * The context of a folder and every folder above it, outermost first, skipping the
+ * empty ones. "Kryptografie" sets the module, "Block 1" narrows it, and a question
+ * about a note in Block 1 should carry both.
+ */
+export function folderContextChain(folderId: string): { path: string; context: string }[] {
+  const chain: { path: string; context: string }[] = [];
+  const guard = new Set<string>();
+  let cur = folderById(folderId);
+  while (cur && !guard.has(cur.id)) {
+    guard.add(cur.id);
+    const text = (cur.context ?? '').trim();
+    if (text) chain.unshift({ path: folderPath(cur.id), context: text });
+    cur = cur.parentId ? folderById(cur.parentId) : undefined;
+  }
+  return chain;
+}
+
 export function renameFolder(id: string, name: string): void {
   const f = folderById(id);
   if (!f || id === INBOX_ID || !name.trim()) return;
@@ -237,7 +295,7 @@ export function notesInFolder(folderId: string, subtree = false): Note[] {
 }
 
 export async function saveNoteFromPad(
-  input: { image: string; thumb: string; strokes?: unknown[] },
+  input: { image: string; thumb: string; strokes?: unknown[]; images?: unknown[] },
   folderId: string = INBOX_ID,
 ): Promise<Note> {
   const n: Note = {
@@ -254,6 +312,7 @@ export async function saveNoteFromPad(
     thumb: input.thumb,
     hasImage: true,
     hasInk: Boolean(input.strokes?.length),
+    hasImgs: Boolean(input.images?.length),
     extracted: false,
   };
   notesStore.notes.unshift(n);
@@ -261,6 +320,7 @@ export async function saveNoteFromPad(
   if (dbState.available) {
     await blobPut(NOTES_COL, n.id, input.image);
     if (input.strokes?.length) await blobPut(NOTES_COL, `${n.id}-ink`, JSON.stringify(input.strokes));
+    if (input.images?.length) await blobPut(NOTES_COL, `${n.id}-img`, JSON.stringify(input.images));
   }
   void extractNote(n.id);
   return n;
@@ -273,13 +333,14 @@ export async function saveNoteFromPad(
  */
 export async function updateNoteInk(
   id: string,
-  input: { image: string; thumb: string; strokes: unknown[]; bg?: string },
+  input: { image: string; thumb: string; strokes: unknown[]; images?: unknown[]; bg?: string },
 ): Promise<void> {
   const n = notesStore.notes.find((x) => x.id === id);
   if (!n) return;
   n.thumb = input.thumb;
   n.hasImage = true;
   n.hasInk = input.strokes.length > 0;
+  n.hasImgs = Boolean(input.images?.length);
   if (input.bg) n.hasBg = true;
   n.text = '';
   n.extracted = false;
@@ -289,6 +350,8 @@ export async function updateNoteInk(
     if (input.bg) await blobPut(NOTES_COL, `${id}-bg`, input.bg);
     await blobPut(NOTES_COL, id, input.image);
     await blobPut(NOTES_COL, `${id}-ink`, JSON.stringify(input.strokes));
+    // Written even when empty, so removing the last picture actually removes it.
+    await blobPut(NOTES_COL, `${id}-img`, JSON.stringify(input.images ?? []));
   }
   void extractNote(id);
 }
@@ -302,6 +365,19 @@ export async function loadNoteBg(id: string): Promise<string> {
   }
 }
 
+/** The pictures placed on a note's board, if it has any. */
+export async function loadNoteImages(id: string): Promise<unknown[] | null> {
+  try {
+    if (!dbState.available) return null;
+    const raw = await blobGet(NOTES_COL, `${id}-img`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown[];
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function loadNoteInk(id: string): Promise<unknown[] | null> {
   try {
     if (!dbState.available) return null;
@@ -312,6 +388,140 @@ export async function loadNoteInk(id: string): Promise<unknown[] | null> {
   } catch {
     return null;
   }
+}
+
+// ---- documents: Word, PDF and anything else, filed straight into a folder ----
+
+/**
+ * A note can be a document you already have. Dropping a file into a folder (or
+ * picking it with the + File button) stores its bytes beside the handwritten ones,
+ * and from there it behaves like any other note: it sits in a folder, it is found by
+ * search, it attaches to a chat as text, and it can be looked at without leaving the
+ * app. The point is that the paper trail of a module lives in ONE place.
+ */
+
+/** What the app can do with a filed document, decided from its type once. */
+export type DocKind = 'image' | 'pdf' | 'word' | 'text' | 'other';
+
+const TEXTUAL = /\.(txt|md|markdown|csv|tsv|json|ya?ml|tex|bib|log|html?|xml|js|ts|py|java|c|cpp|cs|rs|go|sql|sh)$/i;
+const MAX_FILE_MB = 20; // the file database takes 32 MB bodies; base64 costs a third
+const MAX_DOC_TEXT = 200_000; // matches the server-side transcription cap
+
+export function docKind(f?: NoteFile): DocKind {
+  if (!f) return 'other';
+  const name = f.name.toLowerCase();
+  if (f.mime.startsWith('image/')) return 'image';
+  if (f.mime === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
+  if (name.endsWith('.docx')) return 'word';
+  if (f.mime.startsWith('text/') || TEXTUAL.test(name)) return 'text';
+  return 'other';
+}
+
+export function readAsDataUrl(f: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(new Error('read failed'));
+    r.readAsDataURL(f);
+  });
+}
+
+function textFromDataUrl(url: string): string {
+  const comma = url.indexOf(',');
+  if (comma < 0) return '';
+  const body = url.slice(comma + 1);
+  if (!/;base64/i.test(url.slice(0, comma))) return decodeURIComponent(body);
+  try {
+    const bin = atob(body);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return new TextDecoder('utf-8').decode(bytes);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The document's own bytes, served by the dev server with its real content-type, so
+ * a PDF opens in the browser's viewer and Download saves the file under its name.
+ */
+export function noteFileUrl(n: Note, download = false): string {
+  const q = new URLSearchParams({ name: n.file?.name ?? 'document' });
+  if (download) q.set('dl', '1');
+  return `/api/db/file/${NOTES_COL}/${n.id}?${q.toString()}`;
+}
+
+/**
+ * Hand a Word file to Word itself. Office registers the ms-word: scheme on both
+ * macOS and Windows, and "ofe|u|" means "open for edit, this URL". A plain link to
+ * the file route cannot do this: the server sends the real Word content-type, and a
+ * browser answers that with a download, which is what made the Open button feel
+ * broken. The URL has to be absolute, since the handler leaves the page's context.
+ */
+export function noteWordUrl(n: Note): string {
+  const abs = new URL(noteFileUrl(n), window.location.origin).href;
+  return `ms-word:ofe|u|${abs}`;
+}
+
+/** A Word document as viewable HTML plus its plain text (see server/docx.ts). */
+export async function loadDocxView(id: string): Promise<{ html: string; text: string } | null> {
+  try {
+    if (!dbState.available) return null;
+    const res = await fetch(`/api/db/docx/${NOTES_COL}/${id}`);
+    if (!res.ok) return null;
+    return (await res.json()) as { html: string; text: string };
+  } catch {
+    return null;
+  }
+}
+
+/** A Word document carries its own text: keep it so search and chats can use it. */
+async function extractDocText(id: string): Promise<void> {
+  const view = await loadDocxView(id);
+  const n = notesStore.notes.find((x) => x.id === id);
+  if (!n || !view?.text || n.text) return;
+  n.text = view.text.slice(0, MAX_DOC_TEXT);
+  n.extracted = true;
+  n.edited = Date.now();
+  await persistNote(n);
+}
+
+export async function saveFileNote(file: File, folderId: string = INBOX_ID): Promise<Note> {
+  if (file.size > MAX_FILE_MB * 1024 * 1024) {
+    throw new Error(
+      `"${file.name}" is ${(file.size / 1048576).toFixed(1)} MB and the limit is ${MAX_FILE_MB} MB`,
+    );
+  }
+  const dataUrl = await readAsDataUrl(file);
+  const meta: NoteFile = { name: file.name, mime: file.type || '', size: file.size };
+  const kind = docKind(meta);
+  const n: Note = {
+    id: newId(),
+    ts: Date.now(),
+    edited: Date.now(),
+    folderId: folderById(folderId) ? folderId : INBOX_ID,
+    // A file arrives with a name, so the note has one from the start. It is a title
+    // like any other: yours to rename, and nothing overwrites it later.
+    title: file.name.replace(/\.[^.]+$/, ''),
+    text: kind === 'text' ? textFromDataUrl(dataUrl).slice(0, MAX_DOC_TEXT) : '',
+    context: '',
+    tags: [],
+    pinned: false,
+    source: 'file',
+    thumb: kind === 'image' ? await makeThumb(dataUrl) : '',
+    hasImage: kind === 'image',
+    file: meta,
+    // Only a picture has handwriting to read. A Word file carries its own text, and
+    // the rest are viewed as they are.
+    extracted: kind !== 'image' && kind !== 'word',
+  };
+  notesStore.notes.unshift(n);
+  await persistNote(n);
+  if (dbState.available) {
+    await blobPut(NOTES_COL, n.id, dataUrl);
+    if (kind === 'image') void extractNote(n.id);
+    if (kind === 'word') void extractDocText(n.id);
+  }
+  return n;
 }
 
 export function addTypedNote(folderId: string): Note {
@@ -358,8 +568,12 @@ export async function deleteNote(id: string): Promise<void> {
       await colDelete(NOTES_COL, id);
       await colDelete(NOTES_COL, `${id}-ink`); // removes the strokes blob (no JSON exists)
       await colDelete(NOTES_COL, `${id}-bg`);
+      await colDelete(NOTES_COL, `${id}-img`);
+      // The retrieval index too, by collection name rather than by importing
+      // retrieval.ts, which imports this module and would close the cycle.
+      await colDelete('vectors', id);
     } catch (err) {
-      console.warn('[nuclear-math] note delete failed:', err);
+      console.warn('[nuclear-learning] note delete failed:', err);
     }
   }
 }
@@ -378,18 +592,20 @@ export async function loadNoteImage(id: string): Promise<string> {
 const EXTRACT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['title', 'transcript', 'tags', 'language'],
+  required: ['transcript', 'tags', 'language'],
   properties: {
-    title: { type: 'string' },
     transcript: { type: 'string' },
     tags: { type: 'array', items: { type: 'string' } },
     language: { type: 'string' },
   },
 };
 
-const EXTRACT_SYSTEM = `You transcribe ONE handwritten note into a personal knowledge base. The note may be about anything — mathematics, code, ideas, plans, lists — and stays in its own language. Return JSON:
+const EXTRACT_SYSTEM = `You transcribe ONE handwritten note into a personal knowledge base. The note may be about anything — mathematics, code, ideas, plans, lists — and stays in its own language.
+
+A note may arrive as SEVERAL images. They are regions of one writing surface, given in reading order, and neighbouring regions overlap slightly so nothing is lost at a seam. Read them as one continuous note in the order given, and write anything that appears in two regions only once.
+
+Return JSON:
 - "transcript": the faithful transcription. Preserve the note's structure (line breaks, bullets, numbering, headings); write every mathematical expression in $-LaTeX between single $ delimiters; mark genuinely unreadable spots as [?]. Never summarize, never translate, never add content that is not written.
-- "title": ONE short line (max 60 characters) naming what the note is, in the note's own language.
 - "tags": 3 to 8 lowercase tags a searcher would type, in the note's language plus obvious English equivalents, no duplicates.
 - "language": the note's main language as a two-letter code ("de", "en").`;
 
@@ -401,40 +617,76 @@ function decodeImage(imageDataUrl: string): { data: string; mediaType: string } 
   };
 }
 
+/**
+ * The pictures the transcriber is given. A note written on the board can cover more
+ * surface than one image carries legibly, so its stored strokes are re-rendered as
+ * per-region tiles: the ink comes back at full pen weight and the empty board between
+ * regions is never sent at all. A page-sized note yields a single tile and is exactly
+ * the one-image request it always was.
+ *
+ * Two kinds of note keep their stored image instead. One with a backdrop has a raster
+ * layer under the ink that redrawing strokes cannot reproduce, and one without stored
+ * strokes (a pasted screenshot, or a capture from before ink was persisted) has no
+ * strokes to redraw. Both are page-sized by construction, so nothing is lost.
+ */
+async function extractImages(n: Note): Promise<string[]> {
+  if (n.hasInk && !n.hasBg) {
+    const strokes = (await loadNoteInk(n.id)) as TabletStroke[] | null;
+    if (strokes?.length) {
+      const tiles = exportInkTiles(strokes, 'all')
+        .map((t) => t.image)
+        .filter(Boolean);
+      if (tiles.length) return tiles;
+    }
+  }
+  const image = await loadNoteImage(n.id);
+  return image ? [image] : [];
+}
+
 /** One background vision call per note; the learner's own edits always win over a re-run. */
 export async function extractNote(id: string): Promise<boolean> {
   const n = notesStore.notes.find((x) => x.id === id);
   if (!n || !n.hasImage) return false;
   try {
-    const image = await loadNoteImage(id);
-    if (!image) return false;
-    const { data, mediaType } = decodeImage(image);
+    const images = await extractImages(n);
+    if (!images.length) return false;
+    const many = images.length > 1;
+    const content: unknown[] = [
+      {
+        type: 'text',
+        text: many
+          ? `Transcribe this note. It is one writing surface in ${images.length} regions, in reading order.`
+          : 'Transcribe this note.',
+      },
+    ];
+    images.forEach((img, i) => {
+      const { data, mediaType } = decodeImage(img);
+      if (many) content.push({ type: 'text', text: `Region ${i + 1} of ${images.length}:` });
+      content.push({ type: 'image_url', image_url: { url: `data:${mediaType};base64,${data}` } });
+    });
+    const model = extractModel();
     const resp = await createCompletion(
       {
-        model: EXTRACT_MODEL,
-        max_completion_tokens: 6000,
-        reasoning_effort: 'low',
+        model,
+        // A board's worth of regions holds more writing than a page, so the ceiling and
+        // the patience for it both scale with how many were sent.
+        max_completion_tokens: Math.min(24000, 6000 + (images.length - 1) * 2000),
+        reasoning_effort: settings.api.noteEffort || 'low',
         messages: [
           { role: 'system', content: EXTRACT_SYSTEM },
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: 'Transcribe this note.' },
-              { type: 'image_url', image_url: { url: `data:${mediaType};base64,${data}` } },
-            ],
-          },
+          { role: 'user', content },
         ],
         response_format: {
           type: 'json_schema',
           json_schema: { name: 'note_extract', strict: true, schema: EXTRACT_SCHEMA },
         },
       },
-      { timeout: 60000, lane: 'background' },
+      { timeout: Math.min(180000, 60000 + (images.length - 1) * 12000), lane: 'background' },
     );
     const u = (resp as any)?.usage ?? {};
     recordUsage({
       mode: 'notes',
-      model: EXTRACT_MODEL,
+      model,
       role: 'note',
       input: u.prompt_tokens ?? 0,
       output: u.completion_tokens ?? 0,
@@ -443,7 +695,6 @@ export async function extractNote(id: string): Promise<boolean> {
     });
     const out = (resp.choices?.[0]?.message?.content ?? '').trim();
     const parsed = JSON.parse(out) as {
-      title?: string;
       transcript?: string;
       tags?: unknown;
       language?: string;
@@ -451,7 +702,8 @@ export async function extractNote(id: string): Promise<boolean> {
     const transcript = cleanText(parsed.transcript).trim();
     if (!transcript) return false;
     // Hand-edited fields survive a re-extract; only the untouched ones fill in.
-    if (!n.title) n.title = cleanText(parsed.title).trim().slice(0, 80);
+    // The title is never among them: it is the student's, and a transcription
+    // landing minutes later must not rename a note they just named themselves.
     if (!n.text) n.text = transcript;
     if (!n.tags.length && Array.isArray(parsed.tags)) {
       n.tags = parsed.tags
@@ -466,16 +718,15 @@ export async function extractNote(id: string): Promise<boolean> {
     await persistNote(n);
     return true;
   } catch (err) {
-    console.warn('[nuclear-math] note transcription failed:', err);
+    console.warn('[nuclear-learning] note transcription failed:', err);
     return false;
   }
 }
 
-/** Force a fresh transcription: clears the machine-filled fields first, keeps the pin/folder. */
+/** Force a fresh transcription: clears the machine-filled fields first, keeps the title/pin/folder. */
 export async function reExtractNote(id: string): Promise<boolean> {
   const n = notesStore.notes.find((x) => x.id === id);
   if (!n || !n.hasImage) return false;
-  n.title = '';
   n.text = '';
   n.tags = [];
   n.extracted = false;
@@ -499,6 +750,9 @@ export function searchNotes(q: string, folderId?: string): Note[] {
       [normText(n.text), 2],
       [normText(n.context), 2],
       [normText(folderPath(n.folderId)), 1],
+      // A note is findable by what its module says about itself, not only by what
+      // is written on the page.
+      [normText(folderContextChain(n.folderId).map((f) => f.context).join(' ')), 1],
     ];
     let score = 0;
     let allHit = true;
@@ -534,11 +788,16 @@ export interface AskNote {
  * lets an ask request carry a folder of handwriting as a few hundred tokens of
  * text. Notes whose transcript is still in flight are reported, not silently lost.
  */
+export interface AskFolderContext {
+  path: string;
+  context: string;
+}
+
 export function resolveAskNotes(
   noteIds: string[],
   folderIds: string[],
   capChars = 9000,
-): { notes: AskNote[]; omitted: number; pending: number } {
+): { notes: AskNote[]; folders: AskFolderContext[]; omitted: number; pending: number } {
   const wanted = new Map<string, Note>();
   for (const id of noteIds) {
     const n = notesStore.notes.find((x) => x.id === id);
@@ -571,7 +830,22 @@ export function resolveAskNotes(
     used += cost;
     notes.push({ title: n.title || 'Untitled', path: folderPath(n.folderId), text, context });
   }
-  return { notes, omitted, pending };
+  // Folder background for everything that made it in, plus every folder picked
+  // outright. Deduped by path and kept outermost-first, so a module's framing is
+  // stated once no matter how many of its notes came along.
+  const seen = new Set<string>();
+  const folders: AskFolderContext[] = [];
+  const take = (chain: { path: string; context: string }[]) => {
+    for (const entry of chain) {
+      if (seen.has(entry.path)) continue;
+      seen.add(entry.path);
+      folders.push(entry);
+    }
+  };
+  for (const fid of folderIds) take(folderContextChain(fid));
+  for (const n of ordered) take(folderContextChain(n.folderId));
+  folders.sort((a, b) => a.path.length - b.path.length);
+  return { notes, folders, omitted, pending };
 }
 
 // Console probe: __nlNotes() shows the tree, counts, and which transcripts are
