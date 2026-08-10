@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ConfirmButton from '@/components/ConfirmButton.vue';
 import { computed, nextTick, ref, watch } from 'vue';
 import MathText from '@/components/MathText.vue';
 import {
@@ -17,6 +18,7 @@ import {
   notesStore,
   resolveAskNotes,
 } from '@/stores/notes';
+import { retrievalState } from '@/stores/retrieval';
 
 // The study chat: its own window, built to be lived in. Conversations persist on
 // disk, each carries its own attached notes/folders as context, and the thread is
@@ -25,7 +27,6 @@ import {
 
 const conv = computed(() => activeConversation());
 const tree = computed(() => folderTree());
-const countIn = (folderId: string) => notesInFolder(folderId, true).length;
 
 const draft = ref('');
 const busy = ref(false);
@@ -35,9 +36,88 @@ const pickerOpen = ref(false);
 const sidebarOpen = ref(true);
 const threadRef = ref<HTMLDivElement | null>(null);
 
+// ---- the attachment picker ----
+//
+// It used to be a modal over the thread holding a flat checkbox list of the whole
+// tree, with no search, no way to see what a folder actually pulls in, and no sign
+// of whether a note had any text to contribute. It is now a panel inside the chat
+// column that says what the selection costs and what is wrong with it.
+
+const pickerQuery = ref('');
+
+interface PickerRow {
+  key: string;
+  kind: 'folder' | 'note';
+  id: string;
+  depth: number;
+  name: string;
+  count: number;
+  covered: boolean; // a note already pulled in by a selected folder
+  hasText: boolean;
+}
+
+/** Every folder whose subtree a selected folder already covers. */
+const coveredNotes = computed(() => {
+  const c = conv.value;
+  const ids = new Set<string>();
+  if (!c) return ids;
+  for (const fid of c.folderIds) for (const n of notesInFolder(fid, true)) ids.add(n.id);
+  return ids;
+});
+
+const pickerRows = computed<PickerRow[]>(() => {
+  const q = pickerQuery.value.trim().toLowerCase();
+  const hit = (s: string) => !q || s.toLowerCase().includes(q);
+  const rows: PickerRow[] = [];
+  for (const t of tree.value) {
+    const notes = notesInFolder(t.folder.id).filter(
+      (n) => hit(n.title) || hit(n.text.slice(0, 400)) || hit(t.folder.name),
+    );
+    const folderHit = hit(t.folder.name);
+    // A folder is shown when it matches, or when something inside it does, so a
+    // search never orphans a result from the place it lives.
+    if (!folderHit && !notes.length) continue;
+    rows.push({
+      key: `f-${t.folder.id}`,
+      kind: 'folder',
+      id: t.folder.id,
+      depth: t.depth,
+      name: t.folder.name,
+      count: notesInFolder(t.folder.id, true).length,
+      covered: false,
+      hasText: true,
+    });
+    for (const n of notes) {
+      rows.push({
+        key: `n-${n.id}`,
+        kind: 'note',
+        id: n.id,
+        depth: t.depth + 1,
+        name: n.title || (n.hasImage && !n.extracted ? 'Transcribing…' : 'Untitled'),
+        count: 0,
+        covered: coveredNotes.value.has(n.id),
+        hasText: Boolean(n.text.trim() || n.context.trim()),
+      });
+    }
+  }
+  return rows;
+});
+
+/** What the selection actually amounts to, in the units that matter. */
+const pickerSummary = computed(() => {
+  const info = attachedInfo.value;
+  if (!info.notes.length) return 'nothing attached';
+  const chars = info.notes.reduce((sum, n) => sum + n.text.length + n.context.length, 0);
+  const size = chars > 1500 ? `${Math.round(chars / 1000)}k chars` : `${chars} chars`;
+  const bits = [`${info.notes.length} note${info.notes.length === 1 ? '' : 's'}`, size];
+  if (info.pending) bits.push(`${info.pending} still transcribing`);
+  if (retrievalState.indexing) bits.push(`indexing ${retrievalState.indexing}`);
+  return bits.join(' · ');
+});
+
 const attachedInfo = computed(() => {
   const c = conv.value;
-  if (!c) return { notes: [], omitted: 0, pending: 0 };
+  if (!c) return { notes: [], folders: [], omitted: 0, pending: 0 };
   return resolveAskNotes(c.noteIds, c.folderIds);
 });
 
@@ -54,17 +134,29 @@ function openPicker(): void {
   pickerOpen.value = true;
 }
 
-function onRename(id: string): void {
-  const c = chatStore.conversations.find((x) => x.id === id);
-  if (!c) return;
-  const title = prompt('Rename chat:', c.title);
-  if (title?.trim()) renameConversation(id, title);
+// Renaming a chat happens on its own row in the list, not in an OS prompt box.
+const renamingId = ref('');
+const renameDraft = ref('');
+
+const vFocus = {
+  mounted: (el: HTMLInputElement) => {
+    el.focus();
+    el.select();
+  },
+};
+
+function startRename(id: string, title: string): void {
+  renamingId.value = id;
+  renameDraft.value = title;
+}
+
+function commitRename(): void {
+  const id = renamingId.value;
+  renamingId.value = '';
+  if (id && renameDraft.value.trim()) renameConversation(id, renameDraft.value);
 }
 
 function onDelete(id: string): void {
-  const c = chatStore.conversations.find((x) => x.id === id);
-  if (!c) return;
-  if (!confirm(`Delete the chat "${c.title}"?`)) return;
   deleteConversation(id);
 }
 
@@ -134,7 +226,19 @@ function fmtDate(ts: number): string {
     <aside v-show="sidebarOpen" class="clist">
       <button class="ghost newchat" @click="onNew">+ New chat</button>
       <div v-for="c in chatStore.conversations" :key="c.id" class="clist-item">
+        <div v-if="renamingId === c.id" class="clist-edit">
+          <input
+            v-model="renameDraft"
+            v-focus
+            class="clist-input"
+            aria-label="Chat name"
+            @keydown.enter="commitRename"
+            @keydown.esc="renamingId = ''"
+            @blur="commitRename"
+          />
+        </div>
         <button
+          v-else
           class="clist-row"
           :class="{ active: c.id === chatStore.activeId }"
           @click="chatStore.activeId = c.id"
@@ -142,9 +246,14 @@ function fmtDate(ts: number): string {
           <span class="clist-title">{{ c.title }}</span>
           <span class="clist-date mono">{{ fmtDate(c.edited) }}</span>
         </button>
-        <span v-if="c.id === chatStore.activeId" class="clist-acts">
-          <button title="Rename" @click="onRename(c.id)">✎</button>
-          <button title="Delete" @click="onDelete(c.id)">×</button>
+        <span v-if="c.id === chatStore.activeId && renamingId !== c.id" class="clist-acts">
+          <button @click="startRename(c.id, c.title)">Rename</button>
+          <ConfirmButton
+            label="Delete"
+            confirm-label="Delete it"
+            :title="`Delete the chat ${c.title}`"
+            @confirm="onDelete(c.id)"
+          />
         </span>
       </div>
       <div v-if="chatStore.conversations.length === 0" class="clist-empty">
@@ -191,6 +300,52 @@ function fmtDate(ts: number): string {
         </template>
       </div>
 
+      <!-- Attachment picker: a panel in the chat column, not a modal over the thread.
+           Folders take their whole subtree; a note already covered by one is shown as
+           such instead of being silently redundant. -->
+      <div v-if="pickerOpen" class="cpicker">
+        <div class="cpicker-head">
+          <input
+            v-model="pickerQuery"
+            class="cpicker-search"
+            type="search"
+            placeholder="Search notes and folders…"
+            aria-label="Search notes and folders"
+          />
+          <span class="cpicker-sum mono">{{ pickerSummary }}</span>
+          <button class="ghost" @click="pickerOpen = false">Done</button>
+        </div>
+        <div class="cpicker-rows">
+          <label
+            v-for="row in pickerRows"
+            :key="row.key"
+            class="picker-row"
+            :class="{ pnote: row.kind === 'note', dim: row.covered }"
+            :style="{ paddingLeft: `${0.3 + row.depth * 1.1}rem` }"
+          >
+            <input
+              type="checkbox"
+              :checked="
+                row.kind === 'folder'
+                  ? (conv?.folderIds.includes(row.id) ?? false)
+                  : row.covered || (conv?.noteIds.includes(row.id) ?? false)
+              "
+              :disabled="row.covered"
+              @change="row.kind === 'folder' ? toggleFolder(row.id) : toggleNote(row.id)"
+            />
+            <span class="picker-name">{{ row.name }}</span>
+            <span v-if="row.kind === 'folder'" class="picker-tag mono">
+              {{ row.count }} note{{ row.count === 1 ? '' : 's' }} with subfolders
+            </span>
+            <span v-else-if="row.covered" class="picker-tag mono">already in, via its folder</span>
+            <span v-else-if="!row.hasText" class="picker-tag mono warn">nothing to contribute yet</span>
+          </label>
+          <div v-if="!pickerRows.length" class="picker-empty">
+            {{ notesStore.notes.length ? 'Nothing matches that.' : 'No notes yet. Write some in the Notebook first.' }}
+          </div>
+        </div>
+      </div>
+
       <div ref="threadRef" class="cthread">
         <div v-if="!conv || conv.messages.length === 0" class="cwelcome">
           <p>
@@ -228,47 +383,6 @@ function fmtDate(ts: number): string {
       </form>
     </div>
 
-    <!-- Attachment picker: folders (subtrees) and single notes for THIS conversation. -->
-    <div v-if="pickerOpen" class="ovl" @click.self="pickerOpen = false">
-      <div class="ovl-card" role="dialog" aria-modal="true" aria-label="Chat context">
-        <div class="ovl-head">
-          <span>Notes for this chat</span>
-          <button class="x" aria-label="Close" @click="pickerOpen = false">×</button>
-        </div>
-        <div class="picker-rows">
-          <template v-for="t in tree" :key="t.folder.id">
-            <label class="picker-row" :style="{ paddingLeft: `${t.depth * 1.1}rem` }">
-              <input
-                type="checkbox"
-                :checked="conv?.folderIds.includes(t.folder.id) ?? false"
-                @change="toggleFolder(t.folder.id)"
-              />
-              <span class="picker-name">{{ t.folder.name }}</span>
-              <span class="picker-count mono">{{ countIn(t.folder.id) }}</span>
-            </label>
-            <label
-              v-for="n in notesInFolder(t.folder.id)"
-              :key="n.id"
-              class="picker-row pnote"
-              :style="{ paddingLeft: `${t.depth * 1.1 + 1.5}rem` }"
-            >
-              <input
-                type="checkbox"
-                :checked="conv?.noteIds.includes(n.id) ?? false"
-                @change="toggleNote(n.id)"
-              />
-              <span class="picker-name">{{ n.title || (n.hasImage && !n.extracted ? 'Transcribing…' : 'Untitled') }}</span>
-            </label>
-          </template>
-          <div v-if="notesStore.notes.length === 0" class="picker-empty">
-            No notes yet. Write some in the Notebook first.
-          </div>
-        </div>
-        <div class="picker-actions">
-          <button @click="pickerOpen = false">Done</button>
-        </div>
-      </div>
-    </div>
   </section>
 </template>
 
@@ -298,7 +412,8 @@ function fmtDate(ts: number): string {
 
 .clist-item {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
 }
 
 .clist-row {
@@ -344,21 +459,44 @@ function fmtDate(ts: number): string {
 
 .clist-acts {
   display: flex;
+  flex-wrap: wrap;
   flex: none;
-  gap: 0.1rem;
+  gap: 0.3rem;
+  padding: 0.15rem 0.2rem 0.35rem 0.5rem;
 }
 
 .clist-acts button {
-  border: 0;
-  background: none;
+  border: 1px solid var(--border);
+  background: var(--panel);
   color: var(--muted);
-  padding: 0.15rem 0.3rem;
-  font-size: 0.8rem;
+  border-radius: var(--radius);
+  padding: 0.2rem 0.45rem;
+  font-size: 0.78rem;
   cursor: pointer;
 }
 
 .clist-acts button:hover {
   color: var(--ink);
+  border-color: var(--muted);
+}
+
+.clist-acts :deep(.confirm-btn.armed) {
+  color: var(--accent-ink);
+  background: var(--bad);
+  border-color: var(--bad);
+}
+
+/* Renaming in place, on the row the chat already occupies. */
+.clist-edit {
+  display: flex;
+  padding: 0.1rem 0.2rem;
+}
+
+.clist-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.88rem;
+  padding: 0.28rem 0.5rem;
 }
 
 .clist-empty {
@@ -566,6 +704,57 @@ function fmtDate(ts: number): string {
 
 .ovl-head .x:hover {
   color: var(--ink);
+}
+
+.cpicker {
+  border: 1px solid var(--gold);
+  border-radius: var(--radius);
+  background: var(--panel);
+  margin: 0 0 0.6rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 46vh;
+}
+
+.cpicker-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.cpicker-search {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.88rem;
+  padding: 0.35rem 0.55rem;
+}
+
+.cpicker-sum {
+  flex: none;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.cpicker-rows {
+  overflow-y: auto;
+  padding: 0.3rem;
+}
+
+.picker-row.dim {
+  opacity: 0.6;
+}
+
+.picker-tag {
+  flex: none;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.picker-tag.warn {
+  color: var(--gold);
 }
 
 .picker-rows {

@@ -1,6 +1,7 @@
 import { reactive } from 'vue';
 import { chatAsk } from '@/ask';
 import { resolveAskNotes } from '@/stores/notes';
+import { ensureIndexed, retrieve } from '@/stores/retrieval';
 import { colDelete, colList, colPut, dbState } from '@/db';
 
 /**
@@ -51,7 +52,7 @@ async function persist(c: ChatConversation): Promise<void> {
     try {
       await colPut(COL, c.id, plain(c));
     } catch (err) {
-      console.warn('[nuclear-math] chat persist failed:', err);
+      console.warn('[nuclear-learning] chat persist failed:', err);
     }
   }
 }
@@ -64,10 +65,10 @@ async function init(): Promise<void> {
       chatStore.conversations = list;
       chatStore.activeId = list[0]?.id ?? '';
     } catch (err) {
-      console.warn('[nuclear-math] chat load failed:', err);
+      console.warn('[nuclear-learning] chat load failed:', err);
     }
   } else {
-    console.warn('[nuclear-math] file database unavailable: chats will not persist this session.');
+    console.warn('[nuclear-learning] file database unavailable: chats will not persist this session.');
   }
   chatStore.ready = true;
 }
@@ -98,7 +99,7 @@ export function deleteConversation(id: string): void {
   chatStore.conversations = chatStore.conversations.filter((c) => c.id !== id);
   if (chatStore.activeId === id) chatStore.activeId = chatStore.conversations[0]?.id ?? '';
   if (dbState.available) {
-    void colDelete(COL, id).catch((err) => console.warn('[nuclear-math] chat delete failed:', err));
+    void colDelete(COL, id).catch((err) => console.warn('[nuclear-learning] chat delete failed:', err));
   }
 }
 
@@ -115,6 +116,10 @@ export function setAttachments(id: string, noteIds: string[], folderIds: string[
   c.noteIds = [...noteIds];
   c.folderIds = [...folderIds];
   void persist(c);
+  // Start embedding what was just attached. It runs on the background lane, so the
+  // first question can be asked immediately; anything not indexed by then rides
+  // along verbatim for that one turn.
+  void ensureIndexed(c.noteIds, c.folderIds);
 }
 
 function touch(c: ChatConversation): void {
@@ -140,8 +145,14 @@ export async function sendMessage(convId: string, question: string): Promise<boo
   if (c.title === 'New chat') c.title = q.slice(0, 48);
   touch(c);
   void persist(c);
-  const { notes } = resolveAskNotes(c.noteIds, c.folderIds);
-  const reply = await chatAsk({ question: q, notes, history });
+  const { folders } = resolveAskNotes(c.noteIds, c.folderIds);
+  // Retrieval first: the passages that actually bear on THIS question, out of the
+  // whole attachment, however large it is. Anything without a usable index yet goes
+  // verbatim so a freshly attached folder is never silently answered without.
+  const { passages, unindexed } = await retrieve(q, c.noteIds, c.folderIds);
+  const notes = unindexed.length ? resolveAskNotes(unindexed.map((n) => n.id), []).notes : [];
+  const reply = await chatAsk({ question: q, notes, passages, folders, history });
+  void ensureIndexed(c.noteIds, c.folderIds); // catch up for the next turn
   if (!reply) return false;
   c.messages.push({ role: 'assistant', text: reply, ts: Date.now() });
   if (c.messages.length > MAX_MESSAGES) c.messages.splice(0, c.messages.length - MAX_MESSAGES);

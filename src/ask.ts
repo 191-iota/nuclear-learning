@@ -28,7 +28,10 @@ const CHAT_SCHEMA = {
 
 const CHAT_SYSTEM = `You are the study chat for one Swiss student — their primary tool for working through school material of ANY subject, not only mathematics. Each request carries the notes the student attached to this conversation (transcripts of their own handwritten or typed notes) and the conversation so far; you answer the newest student message.
 
+A request may also open with what the student has written about the SUBJECT each note belongs to (the folder context): how the module is examined, what past papers looked like, what the lecturer keeps asking. Treat that as standing background about the course, true of every note under it. It is the student's own words, never a transcript, so it is never something to correct; use it to aim the answer (exam-relevant emphasis, the notation this course uses, the level to pitch at).
+
 Rules:
+- Material may arrive as retrieved PASSAGES: extracts chosen for this question out of a larger notebook. They are excerpts, so absence from them is not evidence a note is silent on something; say what you would need rather than concluding the notes do not cover it. Cite the note a passage came from by its title.
 - Ground answers in the attached notes wherever they bear on the question, and name the note you draw on ("laut deiner Notiz 'Zellatmung' ..."). Where the notes are silent, answer from general knowledge and say so briefly. Where a note is factually wrong, say so plainly and give the correction. Never invent note content.
 - When the student asks you to check or correct THEIR work, work through what the attached transcripts actually contain, item by item. If the content they refer to is NOT in the transcripts (a note marked as having no transcript, or the material simply missing), say exactly that and what you would need — never deliver a generic model answer dressed up as a correction of their work.
 - Whatever language the student writes in, answer in German (Swiss Hochdeutsch, use "ss" not "ß") — unless the question explicitly asks for another language; a vocabulary or translation task keeps its target language.
@@ -48,13 +51,41 @@ const HISTORY_CHARS = 6000;
 export async function chatAsk(input: {
   question: string;
   notes: AskNoteBlock[];
+  /** Folder background the student wrote, outermost first. See NoteFolder.context. */
+  folders?: { path: string; context: string }[];
+  /** Retrieved passages, most relevant first. See stores/retrieval.ts. */
+  passages?: { noteId: string; title: string; path: string; text: string; score: number }[];
   history: ChatTurn[];
 }): Promise<string | null> {
   try {
     const lines: string[] = [];
+    // The subject before the pages. A folder's context is what the module IS: how
+    // it is examined, what past papers looked like, what the lecturer keeps asking.
+    // It is stated once, ahead of the notes, and applies to all of them.
+    if (input.folders?.length) {
+      lines.push("What the student says about the subjects these notes belong to:");
+      for (const f of input.folders) {
+        lines.push('', `[Folder: ${f.path}]`, f.context);
+      }
+      lines.push('');
+    }
+    // Retrieved passages: the parts of the attached notebook that match this
+    // question. A folder of a whole term arrives as a dozen relevant extracts
+    // rather than as the first 9000 characters of it.
+    if (input.passages?.length) {
+      lines.push(
+        'Passages retrieved from the student\'s own notes for THIS question, most relevant first. Each is an extract, not a whole note:',
+      );
+      input.passages.forEach((p, i) => {
+        lines.push('', `[Passage ${i + 1} — from "${p.title}" in ${p.path}]`, p.text);
+      });
+      lines.push('', '[End of retrieved passages]');
+    }
     if (input.notes.length) {
       lines.push(
-        'Notes the student attached to this conversation (transcripts; structure preserved, math as $-LaTeX):',
+        input.passages?.length
+          ? 'These notes are attached but not yet indexed, so they are given in full:'
+          : 'Notes the student attached to this conversation (transcripts; structure preserved, math as $-LaTeX):',
       );
       input.notes.forEach((n, i) => {
         lines.push('', `[Note ${i + 1}: "${n.title}" — folder: ${n.path}]`);
@@ -65,7 +96,7 @@ export async function chatAsk(input: {
         else lines.push('[This note has NO transcript — its page carried no readable content. Only the context above exists.]');
       });
       lines.push('', '[End of attached notes]');
-    } else {
+    } else if (!input.passages?.length) {
       lines.push('No notes are attached to this conversation; answer from general knowledge.');
     }
     // The conversation tail, oldest first, bounded in turns and characters so a long
@@ -116,7 +147,7 @@ export async function chatAsk(input: {
     const reply = cleanText(parsed.reply).trim();
     return reply || null;
   } catch (err) {
-    console.warn('[nuclear-math] chat turn failed:', err);
+    console.warn('[nuclear-learning] chat turn failed:', err);
     return null;
   }
 }

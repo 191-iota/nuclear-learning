@@ -75,6 +75,41 @@ export function createCompletion(
   });
 }
 
+/**
+ * Embeddings for the notebook's retrieval index. Same queue and the same one-in-flight
+ * rule as everything else, on the background lane by default: indexing a folder must
+ * never make the pen wait. Batched by the caller, since the endpoint takes an array.
+ */
+export function createEmbeddings(
+  params: { model: string; input: string[] },
+  opts?: { timeout?: number; lane?: Lane },
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    pending.push({
+      lane: opts?.lane ?? 'background',
+      start: () => {
+        let req: Promise<any>;
+        try {
+          req = getClient().embeddings.create(
+            params,
+            opts?.timeout ? { timeout: opts.timeout } : undefined,
+          );
+        } catch (err) {
+          inFlight = false;
+          reject(err);
+          pump();
+          return;
+        }
+        req.then(resolve, reject).finally(() => {
+          inFlight = false;
+          pump();
+        });
+      },
+    });
+    pump();
+  });
+}
+
 // Strip control characters a model's broken JSON string escaping can smuggle past the
 // strict schema: a live gpt-5.4 reply once mis-escaped the · in a problem label as
 // backslash-u0000-b7, landing a literal NUL byte in the parsed string. Newlines and
