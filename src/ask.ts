@@ -44,6 +44,112 @@ const HISTORY_TURNS = 12; // context window of prior turns per request
 const HISTORY_CHARS = 6000;
 
 /**
+ * The question window that sits over the page being written. It exists for the moment
+ * mid-note where something is uncertain ("heisst das jetzt Kongruenz oder Ähnlichkeit",
+ * "ist $\tan' = 1/\cos^2$"), and it answers that and stops.
+ *
+ * The pad's tutor gives hints on purpose; this one must not. The student is in the
+ * middle of writing their own page, and an unasked-for "als Nächstes könntest du ..."
+ * takes the work away from them at exactly the moment they are doing it. So the rule
+ * here is the strict one: the question, its answer, nothing after it.
+ */
+const NOTE_ASK_SYSTEM = `You answer single questions from a Swiss student who is in the middle of writing a note. The request carries the note they are writing (their own context for it and its transcript), what they have written about the subject it is filed under, and the few questions before this one.
+
+Answer THE QUESTION AND NOTHING ELSE. This is the hard rule of this window:
+- No hints, no nudges, no next steps, no "als Nächstes", no suggestions about what to write, work out, check or revise.
+- Nothing about the rest of the note beyond what the question asks.
+- No praise, no encouragement, no restating the question, no offer to help further.
+- The student is doing the work. You are here for the one thing they were unsure about.
+
+How to answer:
+- As short as the question allows: a fact gets one sentence, a definition gets one or two, a "why" gets the reason and stops. Go longer only when the question genuinely has parts, and then answer the parts.
+- Say it outright. If the answer is yes, start with yes.
+- The note is context for understanding the question, not a thing to comment on. Use it to read what "das hier" refers to, and say so plainly when the transcript does not contain what they are pointing at (a page written since the last transcription will not be in it).
+- Where you are unsure or the answer depends on a convention their course fixes, say that in one clause rather than guessing confidently.
+- Answer in German (Swiss Hochdeutsch, "ss" not "ß"), unless the question is explicitly about another language.
+- Every mathematical, chemical or physical expression in $-LaTeX between single $ delimiters.
+
+Reply as JSON: "reply" = the answer as it should appear, nothing else in it.`;
+
+/**
+ * One turn of that window. The note arrives as text that already exists: its stored
+ * transcript, its context, its folder background. Nothing here reads the board, which
+ * is what keeps a question cheap; the caller decides when a page has changed enough to
+ * be worth transcribing again, and that call is the note's own, not this one's.
+ */
+export async function noteAsk(input: {
+  question: string;
+  note: { title: string; path: string; text: string; context: string } | null;
+  folders?: { path: string; context: string }[];
+  history: ChatTurn[];
+}): Promise<string | null> {
+  try {
+    const lines: string[] = [];
+    if (input.folders?.length) {
+      lines.push('What the student says about the subject this note is filed under:');
+      for (const f of input.folders) lines.push('', `[Folder: ${f.path}]`, f.context);
+      lines.push('');
+    }
+    const n = input.note;
+    if (n) {
+      lines.push(`The note being written: "${n.title || 'Untitled'}" (folder: ${n.path})`);
+      if (n.context) lines.push('', `The student's own context for it: ${n.context}`);
+      if (n.text) lines.push('', 'Its transcript so far:', n.text);
+      else lines.push('', '[This note has no transcript yet, so what is on the page is unknown here.]');
+      lines.push('', '[End of the note]');
+    } else {
+      lines.push('No note is open; answer the question on its own.');
+    }
+    const tail: string[] = [];
+    let used = 0;
+    for (let i = input.history.length - 1; i >= 0 && tail.length < 6; i -= 1) {
+      const t = input.history[i];
+      const line = `${t.role === 'user' ? 'Student' : 'You'}: ${t.text}`;
+      if (used + line.length > 2500) break;
+      used += line.length;
+      tail.unshift(line);
+    }
+    if (tail.length) lines.push('', 'Earlier questions in this window (oldest first):', ...tail);
+    lines.push('', `The question: ${input.question}`);
+
+    const model = settings.api.chatModel;
+    const params: any = {
+      model,
+      // An answer here is a few sentences; the ceiling is for the model's own thinking.
+      max_completion_tokens: Math.min(settings.api.maxTokens, 8000),
+      messages: [
+        { role: 'system', content: NOTE_ASK_SYSTEM },
+        { role: 'user', content: lines.join('\n') },
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: { name: 'note_ask_reply', strict: true, schema: CHAT_SCHEMA },
+      },
+    };
+    if (modelInfo(model).effort && settings.api.chatEffort !== 'none') {
+      params.reasoning_effort = settings.api.chatEffort;
+    }
+    const resp = await createCompletion(params, { timeout: 60000 });
+    const u = (resp as any)?.usage ?? {};
+    recordUsage({
+      mode: 'notes',
+      model,
+      role: 'ask',
+      input: u.prompt_tokens ?? 0,
+      output: u.completion_tokens ?? 0,
+      cacheRead: u.prompt_tokens_details?.cached_tokens ?? 0,
+      cacheCreate: 0,
+    });
+    const parsed = JSON.parse((resp.choices?.[0]?.message?.content ?? '').trim()) as { reply?: string };
+    const reply = cleanText(parsed.reply).trim();
+    return reply || null;
+  } catch (err) {
+    console.warn('[nuclear-learning] note question failed:', err);
+    return null;
+  }
+}
+
+/**
  * One chat turn. Returns the reply text, or null on any failure (the caller keeps
  * the draft and shows a retry line). Stateless: the conversation store owns the
  * transcript, this builds one request from its tail.
@@ -56,6 +162,8 @@ export async function chatAsk(input: {
   /** Retrieved passages, most relevant first. See stores/retrieval.ts. */
   passages?: { noteId: string; title: string; path: string; text: string; score: number }[];
   history: ChatTurn[];
+  /** The conversation's own model, when it has picked one. Presets otherwise. */
+  model?: string;
 }): Promise<string | null> {
   try {
     const lines: string[] = [];
@@ -115,7 +223,10 @@ export async function chatAsk(input: {
     }
     lines.push('', `The student's newest message: ${input.question}`);
 
-    const model = settings.api.chatModel;
+    // Per conversation, falling back to the setting. The effort stays global: it is
+    // tuned to what this persona does, and every tier takes it (the request drops it
+    // for a model whose price table entry says it has none).
+    const model = input.model?.trim() || settings.api.chatModel;
     const params: any = {
       model,
       max_completion_tokens: settings.api.maxTokens,

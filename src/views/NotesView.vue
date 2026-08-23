@@ -1,10 +1,20 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import ConfirmButton from '@/components/ConfirmButton.vue';
+import FloatWindow from '@/components/FloatWindow.vue';
 import MathText from '@/components/MathText.vue';
 import { useTablet, type TabletImage, type TabletStroke } from '@/composables/useTablet';
 import { holdDue } from '@/composables/holdRepeat';
 import { makeThumb } from '@/stores/archive';
+import { inkedBackdrop } from '@/stores/inkColor';
+import {
+  DRAFT_KEY,
+  adoptThread,
+  askNote,
+  clearThread,
+  noteAskStore,
+  thread,
+} from '@/stores/noteAsk';
 import {
   INBOX_ID,
   addFolder,
@@ -13,6 +23,7 @@ import {
   deleteNote,
   docKind,
   folderById,
+  folderContextChain,
   folderPath,
   folderTree,
   setFolderContext,
@@ -29,8 +40,11 @@ import {
   readAsDataUrl,
   renameFolder,
   saveFileNote,
+  saveInkProgress,
   saveNoteFromPad,
   searchNotes,
+  suggestTitle,
+  transcribeStrokes,
   updateNote,
   updateNoteInk,
   type DocKind,
@@ -485,9 +499,17 @@ function openInk(): void {
     ink.clear();
     editingNote.value = null;
     legacyBg.value = '';
+    inkShotAt = 0;
+    inkSavedAt.value = 0;
+    markInkSaved(); // an empty board owes disk nothing
+    pageText.value = '';
+    pageRev.value = -1;
   }
   inkFolder.value = selected.value || INBOX_ID;
   inkOpen.value = true; // the canvas mounts and useTablet sizes it via its ref watcher
+  // A new page starts at home. Without this it opened wherever the last board had been
+  // panned to, which on a board is anywhere at all.
+  ink.resetView();
 }
 
 // Reopen a saved note and keep writing; Save commits back to the same note. Notes
@@ -503,31 +525,281 @@ async function continueWriting(n: Note): Promise<void> {
     const pics = (await loadNoteImages(n.id)) as TabletImage[] | null;
     if (pics?.length) ink.setImages(pics);
   }
+  // Awaited, because the backdrop is a layer that decides how big the board is, and
+  // the fit at the end of this has to be able to see it.
+  // The backdrop is old ink, so it is recoloured on the way in and the file on disk
+  // is left as it was written (see stores/inkColor.ts). legacyBg keeps the ORIGINAL,
+  // because that is what gets stored, and it is recoloured again on every open.
   if (n.hasBg) {
     const bg = await loadNoteBg(n.id);
-    if (bg) ink.setBackdrop(bg);
+    if (bg) await ink.setBackdrop(await inkedBackdrop(bg));
   } else if (!strokes) {
     const img = openImage.value || (await loadNoteImage(n.id));
     if (!img) return;
-    ink.setBackdrop(img);
+    await ink.setBackdrop(await inkedBackdrop(img));
     legacyBg.value = img; // becomes the note's permanent backdrop on save
   }
   editingNote.value = n;
   inkFolder.value = n.folderId;
+  // What is on the board is what is on disk, and the note's picture was taken when
+  // it was last saved, so neither needs writing again until something changes.
+  markInkSaved();
+  inkShotAt = Date.now();
   open.value = null;
   openImage.value = '';
   inkOpen.value = true;
+  // Frame the whole note, now that every layer of it is loaded. The canvas mounts a
+  // moment from now, and useTablet holds the fit until it has a size to fit against;
+  // without that the view fell back to the home page and a note written further out on
+  // the board opened on empty paper with no sign of which way its writing lay.
+  ink.resetView();
+  // The page and its stored transcript agree at this moment, so the question window
+  // can use that text until the pen changes something.
+  pageText.value = n.text;
+  pageRev.value = ink.state.rev;
 }
 
 function closeInk(): void {
-  // The draft stays on the canvas: closing is pausing, saving is the commit.
+  // The draft stays on the canvas, and now on disk too: closing is pausing.
   stopHold(); // a key still down when the editor goes away has nothing left to undo
+  void flushInk();
   inkOpen.value = false;
+  askOpen.value = false;
+}
+
+// ---- the question window: for what you are unsure about mid-page ----
+//
+// It floats over the board so the page never goes away to make room for it, and it
+// answers the question and stops: no hints, no next steps, nothing about the rest of
+// the page (see NOTE_ASK_SYSTEM in ask.ts). The work stays the student's.
+//
+// What it costs is decided here. The page reaches the model as TEXT, and text of this
+// page already exists: the note's own transcript, from the last time it was read. So
+// pageText/pageRev hold that text and the board revision it belongs to, and the board
+// is re-read only when the pen has moved on from it since. Ask five questions about a
+// page you are not currently writing on and it is five small text calls and no reading
+// at all; write a paragraph and ask again and it is one reading, reused by every
+// question after it.
+
+const askOpen = ref(false);
+const askDraft = ref('');
+const askThreadRef = ref<HTMLDivElement | null>(null);
+
+// What the page says, and the board revision that text was read at. -1 means nothing
+// has been read yet, so the first question reads. Both are refs because the line in
+// the window's header states this, and a state nobody can see is a state nobody trusts.
+const pageText = ref('');
+const pageRev = ref(-1);
+
+/** One thread per note. A board with no note behind it yet writes under DRAFT_KEY. */
+const askKey = computed(() => editingNote.value?.id ?? DRAFT_KEY);
+const askMessages = computed(() => thread(askKey.value));
+
+// The autosave turns a nameless board into a real note partway through writing it. The
+// questions asked before that happened belong to it.
+watch(
+  () => editingNote.value?.id,
+  (id, was) => {
+    if (id && !was) adoptThread(DRAFT_KEY, id);
+  },
+);
+
+const askTitle = computed(() => {
+  const n = editingNote.value;
+  return n?.title ? `Question about "${n.title}"` : 'Question about this page';
+});
+
+/** Where the answers stand: what the model can see of the page, and how fresh it is. */
+const askContextNote = computed(() => {
+  if (noteAskStore.reading) return 'reading the page…';
+  if (!pageText.value && !ink.state.hasInk) return 'nothing written yet';
+  if (ink.state.rev !== pageRev.value) return 'page changed; the next question reads it';
+  return pageText.value ? 'the page has been read' : 'nothing read yet';
+});
+
+function scrollAsk(): void {
+  void nextTick(() => {
+    const el = askThreadRef.value;
+    if (el) el.scrollTop = el.scrollHeight;
+  });
+}
+
+function toggleAsk(): void {
+  askOpen.value = !askOpen.value;
+  if (askOpen.value) {
+    noteAskStore.failed = false; // a failure from an hour ago is not news now
+    scrollAsk();
+  }
+}
+
+/** Read the board, but only when what we hold no longer describes it. */
+async function refreshPageText(): Promise<void> {
+  if (ink.state.rev === pageRev.value) return;
+  if (!ink.state.hasInk) {
+    pageRev.value = ink.state.rev; // an empty board is read correctly by not reading it
+    return;
+  }
+  noteAskStore.reading = true;
+  try {
+    const rev = ink.state.rev;
+    const text = await transcribeStrokes(ink.getStrokes());
+    if (text) {
+      pageText.value = text;
+      pageRev.value = rev;
+    }
+  } finally {
+    noteAskStore.reading = false;
+  }
+}
+
+async function onAsk(): Promise<void> {
+  const q = askDraft.value.trim();
+  if (!q || noteAskStore.busy) return;
+  noteAskStore.busy = true;
+  noteAskStore.failed = false;
+  askDraft.value = '';
+  scrollAsk();
+  try {
+    await refreshPageText();
+    const n = editingNote.value;
+    const ok = await askNote(askKey.value, q, {
+      title: n?.title ?? '',
+      path: folderPath(inkFolder.value),
+      text: pageText.value,
+      context: n?.context ?? '',
+      folders: folderContextChain(inkFolder.value),
+    });
+    // The question stays in the thread; the draft comes back for a one-key retry.
+    if (!ok) askDraft.value = q;
+  } finally {
+    noteAskStore.busy = false;
+    scrollAsk();
+  }
+}
+
+watch(askMessages, scrollAsk);
+
+// ---- autosave: the writing reaches disk before the note is finished ----
+//
+// The board used to live in memory until Save was pressed, so leaving the Notebook
+// tab (which unmounts this view) threw a page of handwriting away, and so did a
+// reload. Now it writes itself a moment after the pen stops: the first thing on an
+// empty board becomes a real note, marked a draft, and everything after that updates
+// that note in place.
+//
+// Nothing on this path calls a model. Reading the page back into text is what the
+// Save button does, and it stays a deliberate press.
+const INK_AUTOSAVE_MS = 1200;
+// How often the saved PICTURE of the board is refreshed while writing continues. The
+// strokes ARE the note and cost a few kilobytes of JSON; the picture is a full canvas
+// render plus a JPEG encode, which is not worth repeating every time the pen pauses.
+// Leaving the editor always takes a fresh one, which is when it is looked at.
+const INK_SHOT_MS = 20000;
+// A hand that keeps moving would keep pushing the debounce out in front of itself, so
+// a change that has been waiting this long is written whatever the pen is doing.
+const INK_MAX_WAIT_MS = 15000;
+
+let inkTimer: number | undefined;
+let inkChain: Promise<void> = Promise.resolve();
+let inkShotAt = 0;
+let inkDirtySince = 0;
+const inkSavedRev = ref(0);
+const inkSavedAt = ref(0);
+const inkDirty = computed(
+  () =>
+    ink.state.rev !== inkSavedRev.value &&
+    (ink.state.hasInk || ink.state.hasImages || Boolean(editingNote.value)),
+);
+
+function cancelInkAutosave(): void {
+  if (inkTimer) window.clearTimeout(inkTimer);
+  inkTimer = undefined;
+}
+
+/** Declare the board and the disk to be in step, with nothing outstanding. */
+function markInkSaved(): void {
+  cancelInkAutosave();
+  inkDirtySince = 0;
+  inkSavedRev.value = ink.state.rev;
+}
+
+async function writeInk(full: boolean): Promise<void> {
+  const rev = ink.state.rev;
+  const note = editingNote.value;
+  if (rev === inkSavedRev.value) return;
+  // An empty board is not a note. (An existing one still saves: erasing a page is a
+  // change like any other.)
+  if (!note && !ink.state.hasInk && !ink.state.hasImages) return;
+  const strokes = ink.getStrokes();
+  const images = ink.getImages();
+  const now = Date.now();
+  const shoot = full || !note || now - inkShotAt > INK_SHOT_MS;
+  const image = shoot ? ink.exportImage('all') : '';
+  const thumb = image ? await makeThumb(image) : '';
+  if (image) inkShotAt = now;
+  if (note) {
+    if (note.folderId !== inkFolder.value) updateNote(note.id, { folderId: inkFolder.value });
+    await saveInkProgress(note.id, {
+      image,
+      thumb,
+      strokes,
+      images,
+      bg: legacyBg.value || undefined,
+    });
+  } else {
+    if (!image) return; // the first save is what gives the note its picture
+    const n = await saveNoteFromPad({ image, thumb, strokes, images, draft: true }, inkFolder.value);
+    // From here the draft IS the note: later autosaves and the Save button both write
+    // to it instead of making a second one.
+    editingNote.value = n;
+  }
+  inkSavedRev.value = rev;
+  inkDirtySince = 0;
+  inkSavedAt.value = Date.now();
+}
+
+/** One save at a time: two overlapping writes would race on the same blobs. */
+function flushInk(full = true): Promise<void> {
+  cancelInkAutosave();
+  inkChain = inkChain
+    .then(() => writeInk(full))
+    .catch((err) => {
+      console.warn('[nuclear-learning] ink autosave failed:', err);
+    });
+  return inkChain;
+}
+
+// Every change to the board (a stroke, an erase, an undo, a picture moved) resets the
+// same short timer, so writing runs uninterrupted and the pause after it commits.
+watch(
+  () => ink.state.rev,
+  () => {
+    if (!inkOpen.value) return;
+    cancelInkAutosave();
+    if (!inkDirtySince) inkDirtySince = Date.now();
+    if (Date.now() - inkDirtySince > INK_MAX_WAIT_MS) {
+      void flushInk(false);
+      return;
+    }
+    inkTimer = window.setTimeout(() => {
+      inkTimer = undefined;
+      void flushInk(false);
+    }, INK_AUTOSAVE_MS);
+  },
+);
+
+// A tab going into the background is the last moment anything is guaranteed to run,
+// and it is also how this app is left: switch to something else mid-sentence.
+function onHidden(): void {
+  if (document.visibilityState !== 'hidden') return;
+  if (inkOpen.value) void flushInk();
+  if (autosaveTimer && open.value) saveOpen();
 }
 
 async function saveInk(): Promise<void> {
   if (inkSaving.value) return;
   stopHold();
+  cancelInkAutosave(); // the commit below supersedes anything pending
   const img = ink.exportImage('all');
   if (!img) {
     closeInk();
@@ -535,6 +807,7 @@ async function saveInk(): Promise<void> {
   }
   inkSaving.value = true;
   try {
+    await inkChain; // never rejects: an autosave still in flight finishes first
     const thumb = await makeThumb(img);
     const editing = editingNote.value;
     if (editing) {
@@ -558,6 +831,9 @@ async function saveInk(): Promise<void> {
     }
     ink.clear();
     inkOpen.value = false;
+    inkShotAt = 0;
+    inkSavedAt.value = 0;
+    markInkSaved();
   } catch (err) {
     console.warn('[nuclear-learning] ink note save failed:', err);
   } finally {
@@ -631,7 +907,10 @@ function onKeyUp(e: KeyboardEvent): void {
 function onKeys(e: KeyboardEvent): void {
   if (e.isComposing) return;
   if (e.key === 'Escape') {
-    if (inkOpen.value) closeInk();
+    // Outside in: a held picture, then the question window, then the editor itself.
+    if (inkOpen.value && ink.state.hasSelection) ink.clearSelection();
+    else if (askOpen.value) askOpen.value = false;
+    else if (inkOpen.value) closeInk();
     else if (open.value) closeOpen();
     else return;
     e.preventDefault();
@@ -669,10 +948,6 @@ function onKeys(e: KeyboardEvent): void {
       ink.toggleHand();
       e.preventDefault();
       break;
-    case 'v':
-      ink.toggleSelect();
-      e.preventDefault();
-      break;
     case '+':
     case '=':
       ink.zoomBy(1.25);
@@ -698,6 +973,7 @@ onMounted(() => {
   window.addEventListener('blur', stopHold);
   window.addEventListener('paste', onPaste);
   document.addEventListener('fullscreenchange', onFsChange);
+  document.addEventListener('visibilitychange', onHidden);
 });
 
 onBeforeUnmount(() => {
@@ -707,10 +983,14 @@ onBeforeUnmount(() => {
   window.removeEventListener('blur', stopHold);
   window.removeEventListener('paste', onPaste);
   document.removeEventListener('fullscreenchange', onFsChange);
+  document.removeEventListener('visibilitychange', onHidden);
   stopHold();
   // Leaving the notebook with a debounce in flight would drop the last keystrokes.
   if (autosaveTimer && open.value) saveOpen();
   cancelAutosave();
+  // Switching to another tab unmounts this view, and the board goes with it. The
+  // write below outlives the component: it holds its own copy of the strokes.
+  void flushInk();
 });
 
 // ---- note detail ----
@@ -921,6 +1201,28 @@ async function onReExtract(): Promise<void> {
   }
 }
 
+/**
+ * Name the note from what is on it. The transcription already read the page and left
+ * its candidate behind, so this is usually instant and free; a note that has no
+ * candidate is named from its text with one small call (see suggestTitle).
+ *
+ * It goes into the draft field, which means it is a proposal like anything else typed
+ * there: keep it, edit it, or type over it.
+ */
+const titleBusy = ref(false);
+
+async function onSuggestTitle(): Promise<void> {
+  const n = open.value;
+  if (!n || titleBusy.value) return;
+  titleBusy.value = true;
+  try {
+    const t = await suggestTitle(n.id);
+    if (t) draftTitle.value = t;
+  } finally {
+    titleBusy.value = false;
+  }
+}
+
 function onNewTypedNote(): void {
   const n = addTypedNote(selected.value || INBOX_ID);
   void openNote(n);
@@ -946,8 +1248,19 @@ function excerpt(n: Note): string {
   return n.text.length > 180 ? `${n.text.slice(0, 180)}…` : n.text;
 }
 
+/** What an unnamed note is called on its card. A draft says so rather than claiming
+ *  to be transcribing: nothing is reading it until it is finished. */
+function cardTitle(n: Note): string {
+  if (n.draft) return 'Draft';
+  return n.hasImage && !n.extracted ? 'Transcribing…' : 'Untitled';
+}
+
 function fmtDate(ts: number): string {
   return new Date(ts).toLocaleDateString('de-CH', { day: '2-digit', month: '2-digit', year: '2-digit' });
+}
+
+function fmtClock(ts: number): string {
+  return new Date(ts).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' });
 }
 </script>
 
@@ -1163,13 +1476,16 @@ function fmtDate(ts: number): string {
           </span>
           <span class="ncard-body">
             <span class="ntitle-row">
-              <span class="ntitle">{{ n.title || (n.hasImage && !n.extracted ? 'Transcribing…' : 'Untitled') }}</span>
+              <span class="ntitle">{{ n.title || cardTitle(n) }}</span>
               <span v-if="n.pinned" class="pinned-flag" title="Pinned to the top">Pinned</span>
             </span>
             <span v-if="!n.thumb && n.text" class="nexcerpt">{{ excerpt(n) }}</span>
             <span class="nmeta mono">
               {{ fmtDate(n.ts) }} · {{ folderPath(n.folderId) }}
-              <span v-if="n.hasImage && !n.extracted" class="npending"> · transcribing…</span>
+              <span v-if="n.draft" class="npending" title="Saved as you wrote it. Open it, continue writing, and Save reads it into text.">
+                · draft</span
+              >
+              <span v-else-if="n.hasImage && !n.extracted" class="npending"> · transcribing…</span>
             </span>
             <span v-if="n.tags.length" class="ntags">
               <span v-for="t in n.tags" :key="t" class="tag">{{ t }}</span>
@@ -1193,10 +1509,27 @@ function fmtDate(ts: number): string {
           </select>
         </label>
         <span class="spacer" />
-        <button :disabled="inkSaving || (!ink.state.hasInk && !ink.state.hasImages)" @click="saveInk">
+        <!-- The writing is on disk either way; this line says so, and says when. -->
+        <span class="ink-saved mono" role="status">
+          <template v-if="inkDirty">Saving…</template>
+          <template v-else-if="inkSavedAt">Saved {{ fmtClock(inkSavedAt) }}</template>
+        </span>
+        <button
+          class="ghost"
+          :class="{ on: askOpen }"
+          title="Ask about something you are unsure of while writing. It answers the question and nothing more: no hints, no next steps. The page reaches it as text, and it is only re-read when you have written since."
+          @click="toggleAsk"
+        >
+          Ask
+        </button>
+        <button
+          :disabled="inkSaving || (!ink.state.hasInk && !ink.state.hasImages)"
+          title="Finish the note and read the handwriting back into text. The writing itself is already saved."
+          @click="saveInk"
+        >
           {{ inkSaving ? 'Saving…' : 'Save note' }}
         </button>
-        <button class="ghost" title="Back to the notebook; the draft stays (Esc)" @click="closeInk">Close</button>
+        <button class="ghost" title="Back to the notebook; the draft is saved (Esc)" @click="closeInk">Close</button>
       </div>
       <div ref="inkWrapRef" class="inkwrap">
         <canvas
@@ -1205,16 +1538,15 @@ function fmtDate(ts: number): string {
           :class="{
             erasing: ink.state.tool === 'eraser',
             grabbing: ink.state.tool === 'hand',
-            picking: ink.state.tool === 'select',
           }"
           aria-label="Note writing area"
         />
         <div class="tooldock" role="toolbar" aria-label="Ink tools">
-          <button :disabled="!ink.state.canUndo" title="Undo stroke (Z, or the pen's lower button; hold to remove several)" @click="ink.undo()">Undo</button>
+          <button :disabled="!ink.state.canUndo" title="Undo stroke (Z; hold to remove several)" @click="ink.undo()">Undo</button>
           <button :disabled="!ink.state.canRedo" title="Redo (Y)" @click="ink.redo()">Redo</button>
           <button
             :class="{ on: ink.state.tool === 'eraser' }"
-            title="Stroke eraser (E)"
+            title="Stroke eraser (E). Holding the pen's lower button erases too, and lets go of it again."
             @click="ink.toggleEraser()"
           >
             Eraser
@@ -1227,11 +1559,18 @@ function fmtDate(ts: number): string {
             Hand
           </button>
           <button
-            :class="{ on: ink.state.tool === 'select' }"
-            title="Pick up pictures (V): drag to move, corners to resize, the grip above to turn. Paste a screenshot with Cmd+V to put one here."
-            @click="ink.toggleSelect()"
+            v-if="ink.state.hasSelection"
+            title="Pin it to the page: the pen writes straight over it and can no longer nudge, resize or turn it"
+            @click="ink.lockSelectedImage()"
           >
-            Pictures
+            Lock picture
+          </button>
+          <button
+            v-else-if="ink.state.lockedImages"
+            title="Hand the pinned pictures back, so they can be picked up and moved again"
+            @click="ink.unlockImages()"
+          >
+            Unlock {{ ink.state.lockedImages }} picture{{ ink.state.lockedImages === 1 ? '' : 's' }}
           </button>
           <button
             v-if="ink.state.hasSelection"
@@ -1255,6 +1594,60 @@ function fmtDate(ts: number): string {
       </div>
     </div>
 
+    <!-- The question window. It floats over the board rather than taking its place,
+         so the page you are asking about is still in front of you while you ask. -->
+    <FloatWindow
+      v-if="inkOpen && askOpen"
+      pane-key="notesAsk"
+      :title="askTitle"
+      :w="430"
+      :h="520"
+      :min-w="320"
+      :min-h="260"
+      @close="askOpen = false"
+    >
+      <template #actions>
+        <span class="ask-ctx mono" :title="`What the answers can see of the page: ${askContextNote}`">{{
+          askContextNote
+        }}</span>
+        <button
+          v-if="askMessages.length"
+          class="ask-clear"
+          type="button"
+          title="Empty this thread"
+          @click="clearThread(askKey)"
+        >
+          Clear
+        </button>
+      </template>
+      <div ref="askThreadRef" class="ask-thread">
+        <p v-if="!askMessages.length" class="ask-intro">
+          For the thing you are unsure about while writing: a word, a sign, whether a
+          rule applies here. It answers that and stops, so nothing here does the page
+          for you. Enter asks, Shift+Enter is a new line.
+        </p>
+        <div v-for="(m, i) in askMessages" :key="i" class="ask-msg" :class="m.role">
+          <MathText v-if="m.role === 'assistant'" :text="m.text" rich />
+          <template v-else>{{ m.text }}</template>
+        </div>
+        <p v-if="noteAskStore.reading" class="ask-state mono">Reading the page…</p>
+        <p v-else-if="noteAskStore.busy" class="ask-state mono">Thinking…</p>
+        <p v-if="noteAskStore.failed && !noteAskStore.busy" class="ask-state err mono">
+          No answer came back. The question is back in the box.
+        </p>
+      </div>
+      <form class="ask-composer" @submit.prevent="onAsk">
+        <textarea
+          v-model="askDraft"
+          rows="2"
+          placeholder="What are you unsure about?"
+          aria-label="Question about this page"
+          @keydown.enter.exact.prevent="onAsk"
+        />
+        <button type="submit" :disabled="noteAskStore.busy || !askDraft.trim()">Ask</button>
+      </form>
+    </FloatWindow>
+
     <!-- Note detail: the image beside its editable transcript. -->
     <div v-if="open" class="ovl" @click.self="closeOpen">
       <div
@@ -1268,6 +1661,21 @@ function fmtDate(ts: number): string {
       >
         <div class="ovl-head">
           <input v-model="draftTitle" class="title-edit" type="text" placeholder="Title" aria-label="Note title" />
+          <!-- Naming a note is the one place where reading it back is worth a button.
+               The transcription already read the page and left a name behind, so this
+               usually spends nothing; it fills the field, and the field stays yours. -->
+          <button
+            class="ghost title-ai"
+            :disabled="titleBusy"
+            :title="
+              open.titleHint
+                ? `Use the title the transcription suggested: ${open.titleHint}`
+                : 'Name this note from what is on it. Costs one small call for a note that has never been read.'
+            "
+            @click="onSuggestTitle"
+          >
+            {{ titleBusy ? 'Naming…' : 'Suggest title' }}
+          </button>
           <button class="x" aria-label="Close" title="Close (saves)" @click="closeOpen">×</button>
         </div>
         <div class="ovl-body">
@@ -1857,6 +2265,12 @@ function fmtDate(ts: number): string {
   font-weight: 600;
 }
 
+/* The Ask button says whether its window is open, the way the tool buttons do. */
+.ink-head .ghost.on {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
 .ink-folder {
   font-size: 0.79rem;
   color: var(--muted);
@@ -1890,8 +2304,12 @@ function fmtDate(ts: number): string {
   cursor: grab;
 }
 
-.inkpad.picking {
-  cursor: default;
+/* Quiet by design: it is there to be believed, not read. */
+.ink-saved {
+  font-size: 0.72rem;
+  color: var(--muted);
+  min-width: 5.5rem;
+  text-align: right;
 }
 
 .tooldock button.danger {
@@ -1933,12 +2351,121 @@ function fmtDate(ts: number): string {
   font-variant-numeric: tabular-nums;
 }
 
+/* The question window over the board */
+.ask-ctx {
+  font-size: 0.66rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 12rem;
+}
+
+.ask-clear {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  border-radius: var(--radius);
+  padding: 0.12rem 0.4rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.ask-clear:hover {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+
+.ask-thread {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.7rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.ask-intro {
+  margin: 0;
+  font-size: 0.79rem;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+/**
+ * The THREAD scrolls, never a message inside it. A message with an overflow of its own
+ * is a scroll container, and a scroll container as a flex item may shrink to nothing,
+ * so every answer was squeezed into a box the height of the window with its own
+ * scrollbar and its formulas and tables cut off inside it. Wide things (tables, code,
+ * display math) still scroll, one level further in, where MathText puts that overflow.
+ */
+.ask-msg {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 0.86rem;
+  line-height: 1.55;
+  color: var(--ink);
+}
+
+/* Typed text keeps the line breaks it was typed with. The answer must NOT: it arrives
+   as rendered blocks, and pre-wrap there turns the markup's own newlines into gaps. */
+.ask-msg.user {
+  align-self: flex-end;
+  max-width: 92%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.55rem;
+}
+
+.ask-state {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.ask-state.err {
+  color: var(--bad);
+}
+
+.ask-composer {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 0.45rem;
+  padding: 0.5rem 0.55rem;
+  border-top: 1px solid var(--border);
+}
+
+.ask-composer textarea {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  resize: none;
+  font-family: var(--sans);
+}
+
+.ask-composer button {
+  flex: none;
+}
+
 /* Detail */
 .title-edit {
   flex: 1;
   min-width: 0;
   font-size: 1rem;
   font-weight: 600;
+}
+
+.title-ai {
+  flex: none;
+  font-size: 0.76rem;
+  padding: 0.28rem 0.6rem;
 }
 
 .detail-grid {

@@ -1,5 +1,6 @@
 import { reactive } from 'vue';
 import { cleanText, createCompletion } from '@/api';
+import { modelInfo } from '@/models';
 import { recordUsage } from '@/stores/usage';
 import { blobGet, blobPut, colDelete, colList, colPut, dbState } from '@/db';
 import { settings } from '@/stores/settings';
@@ -56,6 +57,14 @@ export interface Note {
   // Named by hand or not at all: transcription never writes here, so a note keeps
   // the name it was given even when its transcript arrives long afterwards.
   title: string;
+  /**
+   * A title the transcriber offered, parked here and never applied. Reading the page
+   * is the expensive half of naming it, and that already happened, so the offer is
+   * kept from that one call and the button in the note dialog spends nothing to take
+   * it. The student's title stays the student's: nothing but that button ever moves
+   * this into `title`.
+   */
+  titleHint?: string;
   text: string; // the transcript / typed body — machine-seeded, what ask requests attach
   // The student's OWN field, never touched by extraction: assignment background,
   // where the note comes from, what it is for. Dumped freely, and it rides into
@@ -80,6 +89,11 @@ export interface Note {
   // Pictures placed on the board (pasted screenshots and the like), stored as their
   // own blob (<id>-img) so the strokes blob stays small and text-shaped.
   hasImgs?: boolean;
+  // Still being written: the editor autosaved it so nothing can be lost, but it has
+  // never been handed in. Nothing transcribes a draft, here or on the next app start,
+  // because reading a half-written page costs a model call and says little. Finishing
+  // the note in the editor clears the flag and asks for the transcript.
+  draft?: boolean;
   extracted: boolean; // transcript ready (typed notes are born extracted)
   lang?: string;
 }
@@ -152,7 +166,7 @@ async function init(): Promise<void> {
   }
   notesStore.ready = true;
   const pending = notesStore.notes
-    .filter((n) => n.hasImage && !n.extracted)
+    .filter((n) => n.hasImage && !n.extracted && !n.draft)
     .slice(0, MAX_AUTO_EXTRACT);
   for (const n of pending) void extractNote(n.id);
 }
@@ -295,7 +309,7 @@ export function notesInFolder(folderId: string, subtree = false): Note[] {
 }
 
 export async function saveNoteFromPad(
-  input: { image: string; thumb: string; strokes?: unknown[]; images?: unknown[] },
+  input: { image: string; thumb: string; strokes?: unknown[]; images?: unknown[]; draft?: boolean },
   folderId: string = INBOX_ID,
 ): Promise<Note> {
   const n: Note = {
@@ -313,6 +327,7 @@ export async function saveNoteFromPad(
     hasImage: true,
     hasInk: Boolean(input.strokes?.length),
     hasImgs: Boolean(input.images?.length),
+    draft: input.draft || undefined,
     extracted: false,
   };
   notesStore.notes.unshift(n);
@@ -322,14 +337,47 @@ export async function saveNoteFromPad(
     if (input.strokes?.length) await blobPut(NOTES_COL, `${n.id}-ink`, JSON.stringify(input.strokes));
     if (input.images?.length) await blobPut(NOTES_COL, `${n.id}-img`, JSON.stringify(input.images));
   }
-  void extractNote(n.id);
+  // A draft is the editor putting the writing somewhere safe, not a note handed in:
+  // there is nothing to transcribe yet and the pen is still on the page.
+  if (!input.draft) void extractNote(n.id);
   return n;
 }
 
 /**
- * Re-save an ink note after continuing it in the editor: fresh image, thumb, and
- * strokes; the transcript re-extracts (the ink is its source of truth) while the
- * title, tags, and the user's context stay.
+ * Autosave for a note being written: the same bytes as a commit, and none of the
+ * pipeline. Strokes and pictures go to disk, the picture of the board and its
+ * thumbnail follow when the editor asks for a fresh one, and the transcript, the
+ * tags, the title and the `extracted` flag are left exactly as they are.
+ *
+ * No model call happens on this path, ever. That is the whole contract: writing must
+ * be safe from the first line without spending anything to read a page mid-sentence.
+ */
+export async function saveInkProgress(
+  id: string,
+  input: { image?: string; thumb?: string; strokes: unknown[]; images?: unknown[]; bg?: string },
+): Promise<void> {
+  const n = notesStore.notes.find((x) => x.id === id);
+  if (!n) return;
+  n.hasInk = input.strokes.length > 0;
+  n.hasImgs = Boolean(input.images?.length);
+  if (input.thumb) n.thumb = input.thumb;
+  if (input.image) n.hasImage = true;
+  if (input.bg) n.hasBg = true;
+  n.edited = Date.now();
+  await persistNote(n);
+  if (!dbState.available) return;
+  if (input.bg) await blobPut(NOTES_COL, `${id}-bg`, input.bg);
+  if (input.image) await blobPut(NOTES_COL, id, input.image);
+  await blobPut(NOTES_COL, `${id}-ink`, JSON.stringify(input.strokes));
+  // Written even when empty, so removing the last picture actually removes it.
+  await blobPut(NOTES_COL, `${id}-img`, JSON.stringify(input.images ?? []));
+}
+
+/**
+ * Finish an ink note: fresh image, thumb, and strokes; the transcript re-extracts
+ * (the ink is its source of truth) while the title, tags, and the user's context
+ * stay. This is the commit the Save button makes, as opposed to the autosave above,
+ * and it is where a draft stops being one.
  */
 export async function updateNoteInk(
   id: string,
@@ -343,6 +391,7 @@ export async function updateNoteInk(
   n.hasImgs = Boolean(input.images?.length);
   if (input.bg) n.hasBg = true;
   n.text = '';
+  n.draft = false;
   n.extracted = false;
   n.edited = Date.now();
   await persistNote(n);
@@ -354,6 +403,25 @@ export async function updateNoteInk(
     await blobPut(NOTES_COL, `${id}-img`, JSON.stringify(input.images ?? []));
   }
   void extractNote(id);
+}
+
+/**
+ * Replace a note's PICTURE and nothing else. The picture and its thumbnail are a
+ * render of the strokes, re-made on every save, so re-making them is not an edit to
+ * the note: the transcript, the tags, the title, the draft flag and the edited stamp
+ * are all left exactly as they are, and the notebook does not reorder itself because
+ * a picture was refreshed. Used by the ink recolour (stores/inkColor.ts).
+ */
+export async function setNotePreview(
+  id: string,
+  input: { image: string; thumb: string },
+): Promise<void> {
+  const n = notesStore.notes.find((x) => x.id === id);
+  if (!n || !input.image) return;
+  n.thumb = input.thumb;
+  n.hasImage = true;
+  await persistNote(n);
+  if (dbState.available) await blobPut(NOTES_COL, id, input.image);
 }
 
 export async function loadNoteBg(id: string): Promise<string> {
@@ -592,9 +660,10 @@ export async function loadNoteImage(id: string): Promise<string> {
 const EXTRACT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['transcript', 'tags', 'language'],
+  required: ['transcript', 'title', 'tags', 'language'],
   properties: {
     transcript: { type: 'string' },
+    title: { type: 'string' },
     tags: { type: 'array', items: { type: 'string' } },
     language: { type: 'string' },
   },
@@ -606,6 +675,7 @@ A note may arrive as SEVERAL images. They are regions of one writing surface, gi
 
 Return JSON:
 - "transcript": the faithful transcription. Preserve the note's structure (line breaks, bullets, numbering, headings); write every mathematical expression in $-LaTeX between single $ delimiters; mark genuinely unreadable spots as [?]. Never summarize, never translate, never add content that is not written.
+- "title": a name for this note, at most 60 characters, in the note's own language. Say what is ON the page as concretely as the page allows ("Grenzwerte: Sandwich-Satz mit Beispielen"), and take the note's own heading when it has one. No date, no filler ("Notizen zu ..."), no trailing punctuation. It is offered to the student, who decides whether to use it.
 - "tags": 3 to 8 lowercase tags a searcher would type, in the note's language plus obvious English equivalents, no duplicates.
 - "language": the note's main language as a two-letter code ("de", "en").`;
 
@@ -643,13 +713,24 @@ async function extractImages(n: Note): Promise<string[]> {
   return image ? [image] : [];
 }
 
-/** One background vision call per note; the learner's own edits always win over a re-run. */
-export async function extractNote(id: string): Promise<boolean> {
-  const n = notesStore.notes.find((x) => x.id === id);
-  if (!n || !n.hasImage) return false;
+interface Transcription {
+  transcript: string;
+  title: string;
+  tags: string[];
+  lang: string;
+}
+
+/**
+ * One vision call over a set of region images, and the parsed result. Both readers go
+ * through here: the note's own transcription, and the live read the question window
+ * asks for. Splitting it out is what keeps those two the SAME reading, on the same
+ * model, at the same cost, so an answer about the page is never based on a weaker look
+ * at it than the note's transcript was.
+ *
+ * Returns null when the call or the parse failed, or when the page came back empty.
+ */
+async function runTranscription(images: string[]): Promise<Transcription | null> {
   try {
-    const images = await extractImages(n);
-    if (!images.length) return false;
     const many = images.length > 1;
     const content: unknown[] = [
       {
@@ -693,33 +774,152 @@ export async function extractNote(id: string): Promise<boolean> {
       cacheRead: u.prompt_tokens_details?.cached_tokens ?? 0,
       cacheCreate: 0,
     });
-    const out = (resp.choices?.[0]?.message?.content ?? '').trim();
-    const parsed = JSON.parse(out) as {
+    const parsed = JSON.parse((resp.choices?.[0]?.message?.content ?? '').trim()) as {
       transcript?: string;
+      title?: string;
       tags?: unknown;
       language?: string;
     };
     const transcript = cleanText(parsed.transcript).trim();
-    if (!transcript) return false;
+    if (!transcript) return null;
+    return {
+      transcript,
+      title: cleanText(parsed.title).trim().slice(0, 80),
+      tags: Array.isArray(parsed.tags)
+        ? parsed.tags
+            .filter((t): t is string => typeof t === 'string')
+            .map((t) => cleanText(t).trim().toLowerCase())
+            .filter(Boolean)
+            .slice(0, 8)
+        : [],
+      lang: typeof parsed.language === 'string' ? parsed.language.slice(0, 5) : '',
+    };
+  } catch (err) {
+    console.warn('[nuclear-learning] note transcription failed:', err);
+    return null;
+  }
+}
+
+/** One background vision call per note; the learner's own edits always win over a re-run. */
+export async function extractNote(id: string): Promise<boolean> {
+  const n = notesStore.notes.find((x) => x.id === id);
+  if (!n || !n.hasImage) return false;
+  try {
+    const images = await extractImages(n);
+    if (!images.length) return false;
+    const out = await runTranscription(images);
+    if (!out) return false;
     // Hand-edited fields survive a re-extract; only the untouched ones fill in.
     // The title is never among them: it is the student's, and a transcription
     // landing minutes later must not rename a note they just named themselves.
-    if (!n.text) n.text = transcript;
-    if (!n.tags.length && Array.isArray(parsed.tags)) {
-      n.tags = parsed.tags
-        .filter((t): t is string => typeof t === 'string')
-        .map((t) => cleanText(t).trim().toLowerCase())
-        .filter(Boolean)
-        .slice(0, 8);
-    }
-    n.lang = typeof parsed.language === 'string' ? parsed.language.slice(0, 5) : n.lang;
+    // The candidate is parked in titleHint, where the button in the note dialog can
+    // hand it over for nothing.
+    if (out.title) n.titleHint = out.title;
+    if (!n.text) n.text = out.transcript;
+    if (!n.tags.length && out.tags.length) n.tags = out.tags;
+    if (out.lang) n.lang = out.lang;
     n.extracted = true;
     n.edited = Date.now();
     await persistNote(n);
     return true;
   } catch (err) {
-    console.warn('[nuclear-learning] note transcription failed:', err);
+    // Every caller fires this and walks away, so a throw here would surface as an
+    // unhandled rejection rather than as a note that stayed untranscribed.
+    console.warn('[nuclear-learning] transcribing a note failed:', err);
     return false;
+  }
+}
+
+/**
+ * Read a board that is being written RIGHT NOW, and hand the text back without
+ * touching any note. The question window over the editor needs to know what is on the
+ * page, and the page it is looking at is usually newer than the note's stored
+ * transcript; writing this into the note instead would overwrite a transcript the
+ * student may have corrected by hand.
+ *
+ * The caller caches the result against the board's revision, so this runs when the
+ * page has actually changed and never once per question.
+ */
+export async function transcribeStrokes(strokes: TabletStroke[]): Promise<string> {
+  const tiles = exportInkTiles(strokes, 'all')
+    .map((t) => t.image)
+    .filter(Boolean);
+  if (!tiles.length) return '';
+  const out = await runTranscription(tiles);
+  return out?.transcript ?? '';
+}
+
+// ---- naming a note, on request ----
+
+const TITLE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['title'],
+  properties: { title: { type: 'string' } },
+};
+
+const TITLE_SYSTEM = `You name ONE note in a student's knowledge base. You are given what the note holds: the student's own context for it, and its text.
+
+Return JSON with "title": at most 60 characters, in the note's own language, saying what is ON the page as concretely as the page allows ("Grenzwerte: Sandwich-Satz mit Beispielen"). Take the note's own heading when it has one. No date, no filler ("Notizen zu ..."), no trailing punctuation.`;
+
+/**
+ * A name for a note, when the student asks for one. The transcriber already read the
+ * page and left its candidate behind, so the ordinary case spends nothing: the button
+ * hands over what that one call produced. A note with no candidate (typed by hand,
+ * filed as a document, or transcribed before candidates were kept) costs one small
+ * text call over what it already holds, and a page nobody has read yet is read first,
+ * which is the call it was owed anyway.
+ *
+ * Returns '' when there is nothing to go on. Never writes to the note's own title:
+ * that stays a field only the student and the button they pressed can fill.
+ */
+export async function suggestTitle(id: string): Promise<string> {
+  const n = notesStore.notes.find((x) => x.id === id);
+  if (!n) return '';
+  if (n.titleHint?.trim()) return n.titleHint.trim();
+  // A page that has never been transcribed: reading it is what naming it needs, and
+  // it fills the transcript and tags at the same time.
+  if (!n.text.trim() && !n.context.trim() && n.hasImage) {
+    await extractNote(id);
+    return n.titleHint?.trim() ?? '';
+  }
+  const body = [n.context.trim(), n.text.trim()].filter(Boolean).join('\n\n').slice(0, 4000);
+  if (!body) return '';
+  try {
+    const model = settings.api.backgroundModel || 'gpt-5.4-mini';
+    const params: any = {
+      model,
+      max_completion_tokens: 2000, // a title is ten tokens; the rest is the model's own thinking
+      messages: [
+        { role: 'system', content: TITLE_SYSTEM },
+        { role: 'user', content: body },
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: { name: 'note_title', strict: true, schema: TITLE_SCHEMA },
+      },
+    };
+    if (modelInfo(model).effort) params.reasoning_effort = 'low';
+    const resp = await createCompletion(params, { timeout: 45000, lane: 'background' });
+    const u = (resp as any)?.usage ?? {};
+    recordUsage({
+      mode: 'notes',
+      model,
+      role: 'note',
+      input: u.prompt_tokens ?? 0,
+      output: u.completion_tokens ?? 0,
+      cacheRead: u.prompt_tokens_details?.cached_tokens ?? 0,
+      cacheCreate: 0,
+    });
+    const parsed = JSON.parse((resp.choices?.[0]?.message?.content ?? '').trim()) as { title?: string };
+    const title = cleanText(parsed.title).trim().slice(0, 80);
+    if (!title) return '';
+    n.titleHint = title;
+    await persistNote(n);
+    return title;
+  } catch (err) {
+    console.warn('[nuclear-learning] naming a note failed:', err);
+    return '';
   }
 }
 
@@ -729,6 +929,9 @@ export async function reExtractNote(id: string): Promise<boolean> {
   if (!n || !n.hasImage) return false;
   n.text = '';
   n.tags = [];
+  // Asking for the transcript is finishing the note, whether or not it went through
+  // the editor's Save button.
+  n.draft = false;
   n.extracted = false;
   await persistNote(n);
   return extractNote(id);
