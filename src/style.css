@@ -228,13 +228,17 @@ label {
   color: var(--muted);
 }
 
-/* The top-level mode switch: Problem Solving (the pad world) | Notes (notebook + chat). */
+/* The header carries two questions, and they have to LOOK like two questions. Which
+   app you are in is a filled switch; which page of it you are on is an underlined tab.
+   They used to be the same pill in the same row, which is what made a click into a
+   guess about what it would change. */
 .modeswitch {
   display: flex;
   gap: 0.15rem;
   padding: 0.15rem;
   border: 1px solid var(--border);
   border-radius: 999px;
+  background: var(--bg);
   flex: none;
 }
 
@@ -243,10 +247,11 @@ label {
   background: none;
   font-family: var(--mono);
   font-size: 0.72rem;
-  padding: 0.28rem 0.75rem;
+  padding: 0.3rem 0.8rem;
   border-radius: 999px;
   color: var(--muted);
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .mode-btn:hover:not(.active) {
@@ -256,21 +261,58 @@ label {
 .mode-btn.active {
   background: var(--accent);
   color: var(--accent-ink);
+  font-weight: 600;
 }
 
+/* The pages of the app you are in. A rule to their left says they belong to the switch
+   beside them rather than standing on their own. */
 .tabs {
   display: flex;
-  gap: 0.35rem;
+  gap: 0.1rem;
+  align-items: stretch;
+  padding-left: 0.9rem;
+  border-left: 1px solid var(--border);
+  margin-left: -0.2rem;
 }
 
 .tab {
-  padding: 0.35rem 0.7rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 0.8rem;
+  padding: 0.3rem 0.6rem 0.24rem;
+  white-space: nowrap;
+}
+
+.tab:hover:not(:disabled) {
+  border-color: transparent;
+  border-bottom-color: var(--border);
+  color: var(--ink);
 }
 
 .tab.active {
-  background: var(--accent);
-  color: var(--accent-ink);
-  border-color: var(--accent);
+  color: var(--ink);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+
+.tab.active:hover {
+  border-bottom-color: var(--accent);
+}
+
+/* Usage and Presets belong to neither app, so they sit at the far end beside the theme
+   toggle instead of being repeated in both tab rows. */
+.apptabs {
+  display: flex;
+  gap: 0.1rem;
+  flex: none;
+}
+
+.apptab {
+  font-family: var(--mono);
+  font-size: 0.72rem;
 }
 
 .tab-badge {
@@ -310,12 +352,13 @@ label {
   }
 
   .tabs {
-    gap: 0.2rem;
+    gap: 0.1rem;
+    padding-left: 0.5rem;
   }
 
   .tab,
   .mode-btn {
-    padding-inline: 0.55rem;
+    padding-inline: 0.45rem;
   }
 }
 
