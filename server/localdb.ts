@@ -31,7 +31,12 @@ import { docxMedia, docxToHtml } from './docx';
  *   GET    /api/db/docx/:col/:id    → { html, text } for a stored Word document
  */
 
-const COLS = new Set(['archive', 'notes', 'notefolders', 'chats']);
+// 'vectors' holds the notebook's retrieval index (one JSON blob per note, see
+// stores/retrieval.ts). It was missing here, so every write of an index 404ed and
+// every read came back empty: the notebook re-embedded itself on each attach and each
+// question, and answered from verbatim transcripts capped at 9000 characters. Both
+// halves of that were paid for on every turn.
+const COLS = new Set(['archive', 'notes', 'notefolders', 'chats', 'vectors']);
 const ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 const MAX_BODY = 32 * 1024 * 1024; // localStorage tops out near 5 MB; images near 1 MB
 

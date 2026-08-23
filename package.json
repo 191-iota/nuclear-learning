@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
+    "dump": "node scripts/dump-folder.mjs",
     "backup": "bash scripts/backup.sh push",
     "backup:check": "bash scripts/backup.sh check",
     "backup:pull": "bash scripts/backup.sh pull",
