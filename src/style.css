@@ -519,6 +519,50 @@ label {
   }
 }
 
+/* The ink control: a swatch that opens the OS colour picker, the hex beside it so a
+   colour can be typed or read off, and the way back to the shipped one. */
+.inkpick {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.inkpick input[type='text'] {
+  flex: 1;
+  min-width: 5.5rem;
+}
+
+.inkpick button {
+  flex: none;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.72rem;
+}
+
+.inkswatch {
+  flex: none;
+  width: 2.2rem;
+  height: 2rem;
+  padding: 0.15rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.inkstate {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.inkstate button {
+  flex: none;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.7rem;
+}
+
 .preset {
   margin-bottom: 0.8rem;
 }

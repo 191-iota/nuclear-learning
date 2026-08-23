@@ -397,8 +397,15 @@ export function topicCounts(): { topic: string; count: number }[] {
   return [...counts.values()].sort((a, b) => b.count - a.count);
 }
 
-/** Downscale a data-URL image to a thumbnail JPEG (list rendering stays light). */
-export function makeThumb(dataUrl: string, maxEdge = 320): Promise<string> {
+/**
+ * Downscale a data-URL image to a thumbnail JPEG (list rendering stays light).
+ *
+ * 400 px at quality 0.8, up from 320 at 0.72: a card is 260 px wide, so on a retina
+ * screen the old thumbnail was being stretched past its own pixels and handwriting
+ * came out mushy. A thumbnail rides inside the note's JSON, so this stays the
+ * smallest size that survives the display it is shown on.
+ */
+export function makeThumb(dataUrl: string, maxEdge = 400): Promise<string> {
   return new Promise((resolve) => {
     if (!dataUrl) {
       resolve('');
@@ -420,7 +427,7 @@ export function makeThumb(dataUrl: string, maxEdge = 320): Promise<string> {
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(img, 0, 0, c.width, c.height);
-      resolve(c.toDataURL('image/jpeg', 0.72));
+      resolve(c.toDataURL('image/jpeg', 0.8));
     };
     img.onerror = () => resolve('');
     img.src = dataUrl;

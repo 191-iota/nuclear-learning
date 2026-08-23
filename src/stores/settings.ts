@@ -23,12 +23,27 @@ export type Settings = typeof defaults;
 // away every value the user had tuned to buy nothing.
 const KEY = 'nl.settings.v26';
 
+// The ink the shipped default used to be. A saved copy holding it follows the new one
+// below, and the pictures already on disk were drawn with it (see inkOnDisk).
+//
+// This one migration happens ONCE and says so, which the others above do not. They can
+// afford to re-fire, because nobody sets a pen width to exactly the retired default on
+// purpose; a colour is different. Picking the old near-black by hand is a real thing to
+// want, and without the mark below the next boot would take it away again.
+const OLD_INK = '#1a1a1a';
+const INK_MIGRATED = 'nl.ink.migrated.v1';
+
+let inkBefore = '';
+let inkMigrated = false;
+
 function load(): Settings {
   const base = structuredClone(defaults) as Settings;
   try {
     const saved = localStorage.getItem(KEY);
     if (saved) {
       const parsed = JSON.parse(saved) as Partial<Settings>;
+      const ink = (parsed.canvas as Settings['canvas'] | undefined)?.strokeColor;
+      if (typeof ink === 'string' && ink) inkBefore = ink;
       for (const k of Object.keys(parsed) as (keyof Settings)[]) {
         const section = base[k];
         const savedSection = parsed[k];
@@ -50,10 +65,51 @@ function load(): Settings {
     base.tablet.baseWidth = defaults.tablet.baseWidth;
   }
   if (base.tablet.scratchShare === 0.28) base.tablet.scratchShare = 0;
+  // Same rule for the two that were retuned afterwards. Smoothing went 0.35 → 0.5
+  // (0.35 still let a slow hand read as a shaky one), and the exported picture went
+  // 1400 px at quality 0.95 → 1600 at 0.97, which is as much detail as one image can
+  // carry before the vision model rescales it on the way in and thins the ink doing so.
+  if (base.tablet.smoothing === 0.35) base.tablet.smoothing = defaults.tablet.smoothing;
+  if (base.export.maxEdgePx === 1400) base.export.maxEdgePx = defaults.export.maxEdgePx;
+  if (base.export.jpegQuality === 0.95) base.export.jpegQuality = defaults.export.jpegQuality;
+  // Same rule for the ink: a saved copy of the old near-black follows the new ink,
+  // a colour picked by hand stays. Why this colour is inkExport's drawStrokes; what
+  // it means for notes written in the old one is stores/inkColor.ts.
+  let inkDone = false;
+  try {
+    inkDone = Boolean(localStorage.getItem(INK_MIGRATED));
+  } catch {
+    /* no storage: treat it as never migrated, which is the safe half */
+  }
+  if (base.canvas.strokeColor === OLD_INK && !inkDone) {
+    base.canvas.strokeColor = defaults.canvas.strokeColor;
+    inkMigrated = true;
+  }
   return base;
 }
 
 export const settings = reactive(load());
+
+// A migration nothing has changed since would otherwise live only in memory: the saved
+// copy still holds the old ink, and the watcher below only writes on a change. Writing
+// it now is what makes the migration a single event with a record, rather than
+// something that happens again on every boot.
+if (inkMigrated) {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(sanitized()));
+    localStorage.setItem(INK_MIGRATED, '1');
+  } catch {
+    /* storage unavailable; the ink is still right for this session */
+  }
+}
+
+/**
+ * The ink colour in force before this load, which is the colour every picture of a
+ * note on disk was drawn with. Only stores/inkColor.ts has any use for it, and only
+ * once: it is the starting point of the one-off recolour, after which that store
+ * keeps its own record of what has been re-rendered.
+ */
+export const inkOnDisk = inkBefore || OLD_INK;
 
 // v-model.number leaves '' (or a half-typed string) on the reactive object while a field
 // can't parse, and `n < ''` coerces to `n < 0` — an emptied "Re-check after (strokes)"

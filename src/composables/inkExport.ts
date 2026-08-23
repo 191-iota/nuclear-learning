@@ -41,6 +41,39 @@ export interface TabletStroke {
   maxY: number;
 }
 
+/**
+ * A picture placed on the surface: a pasted screenshot, a dropped photo. Centre,
+ * size and angle in page units, with the bytes carried inline so a note round-trips
+ * through one blob. Ink is drawn over the top of these.
+ */
+export interface TabletImage {
+  id: number;
+  src: string; // data URL
+  x: number; // centre
+  y: number;
+  w: number;
+  h: number;
+  rot: number; // radians
+  /**
+   * Pinned to the surface: the pen goes straight through it, so it can neither be
+   * picked up nor nudged and every press over it is writing. A picture you are
+   * taking notes ON is a background, and a background that moves when the pen
+   * clips its edge has ruined the page under it.
+   */
+  locked?: boolean;
+}
+
+/** Decoded pictures, by source. A redraw must never wait on a download. */
+export type ImageResolver = (src: string) => HTMLImageElement | null;
+
+/** The page is a fixed 1000 units tall; its width follows the tablet's aspect. */
+export const PAGE_H = 1000;
+
+export function pageWidth(): number {
+  const a = Number(settings.tablet.aspect) || 1.6;
+  return Math.round(PAGE_H * Math.min(2.4, Math.max(0.8, a)));
+}
+
 /** A rectangle in page units. The export crops to one of these. */
 export interface InkBox {
   minX: number;
@@ -100,6 +133,28 @@ export function bucketWidth(w: number): number {
   return Math.round(w / 0.15) * 0.15;
 }
 
+/**
+ * Where the drawn curve passes through after sample `i`: the midpoint of the segment
+ * that follows it.
+ *
+ * A tablet hands over a chain of samples, and joining them with straight lines draws
+ * exactly that chain, every sample a small corner, which is why handwriting came out
+ * looking faceted and raw however finely it was sampled. Taking each sample as the
+ * CONTROL point of a quadratic and the midpoints as the points the curve passes
+ * through turns the chain into one continuous curve: the corners round off at the
+ * scale of the sampling, which is the scale the hand never meant to draw at, and
+ * every real turn of the pen survives because it spans many samples.
+ *
+ * The engine draws the live stroke with the same rule, so the ink under the pen and
+ * the ink after the pen lifts are the same shape.
+ */
+export function inkAnchor(pts: TabletPoint[], i: number): { x: number; y: number } {
+  const a = pts[i];
+  const b = pts[i + 1];
+  if (!b) return { x: a.x, y: a.y };
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
 function drawStroke(ctx: CanvasRenderingContext2D, s: TabletStroke): void {
   const pts = s.pts;
   if (pts.length === 0) return;
@@ -110,29 +165,197 @@ function drawStroke(ctx: CanvasRenderingContext2D, s: TabletStroke): void {
     ctx.fill();
     return;
   }
+  const last = pts.length - 1;
   let bw = -1;
   let open = false;
-  for (let i = 1; i < pts.length; i += 1) {
+  for (let i = 1; i <= last; i += 1) {
     const w = bucketWidth(widthFor(s, pts[i].p));
     if (w !== bw) {
+      // A width change starts its own path, picking up exactly where the last one
+      // ended (the anchor), so the curve stays continuous across the seam.
       if (open) ctx.stroke();
+      const from = i === 1 ? pts[0] : inkAnchor(pts, i - 1);
       ctx.beginPath();
       ctx.lineWidth = w;
-      ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+      ctx.moveTo(from.x, from.y);
       open = true;
       bw = w;
     }
-    ctx.lineTo(pts[i].x, pts[i].y);
+    // The tail runs to the real last sample: a stroke must end where the pen did,
+    // or every full stop and serif would be trimmed by half a segment.
+    if (i === last) ctx.lineTo(pts[i].x, pts[i].y);
+    else {
+      const to = inkAnchor(pts, i);
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, to.x, to.y);
+    }
   }
   if (open) ctx.stroke();
 }
 
+/**
+ * The ink colour, and why the shipped one is not black.
+ *
+ * Reading speed is flat once contrast is well past threshold (Legge, Rubin and
+ * Luebker, 1987), so every dark ink on white paper reads at the same speed and the
+ * choice is settled by what happens on either side of that plateau.
+ *
+ * Below it is the part that decides it for mathematics. Fine detail is resolved by
+ * the luminance channel; the chromatic channels stop resolving detail at a fraction
+ * of the spatial frequency luminance still carries (Mullen, 1985). An exponent, a
+ * prime, a minus and a fraction bar are the smallest marks on a page of algebra, and
+ * ink that differs from the paper mostly in HUE hands exactly those marks to the
+ * channel that cannot see them. That rules out a saturated pen of any colour,
+ * however well it reads across a heading.
+ *
+ * Above the plateau is glare. Black on white is the largest luminance step a screen
+ * can make, and stepping back from it is what the readability work agrees on for
+ * long sessions (Rello and Baeza-Yates, 2012, measured shorter fixations on softer
+ * pairs than on black and white).
+ *
+ * So: dark enough that nothing thin is at risk, one step back from the maximum, and
+ * almost no chroma. #1f2a37 is L* 17, C* 10 at hue 266 degrees, and 14.5:1 against
+ * white paper, twice the AAA floor of 7:1. The hue is the one part of this the
+ * science leaves open. A slight blue is what ink has always been, it keeps
+ * handwriting apart from the interface's warm near-black, and at C* 10 there is far
+ * too little of it to fringe a 1.2-unit stroke.
+ *
+ * The quieter half of the argument: colour used to mark the matching parts of an
+ * expression genuinely helps, and it only works while colour is rare on the page.
+ * A near-neutral default keeps that channel free.
+ *
+ * Ink is applied when a stroke is DRAWN and no stroke carries a colour of its own,
+ * so changing this repaints every note ever written, everywhere, at once. The one
+ * thing that does not follow by itself is a picture of a note rendered before the
+ * change; stores/inkColor.ts carries those across.
+ */
 export function drawStrokes(ctx: CanvasRenderingContext2D, list: TabletStroke[]): void {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.strokeStyle = settings.canvas.strokeColor;
   ctx.fillStyle = settings.canvas.strokeColor;
   for (const s of list) drawStroke(ctx, s);
+}
+
+// ---- pictures on the surface ----
+
+/** The four corners in page space, clockwise from top-left of the unrotated box. */
+export function imageCorners(im: TabletImage): { x: number; y: number }[] {
+  const hw = im.w / 2;
+  const hh = im.h / 2;
+  const cos = Math.cos(im.rot);
+  const sin = Math.sin(im.rot);
+  return [
+    [-hw, -hh],
+    [hw, -hh],
+    [hw, hh],
+    [-hw, hh],
+  ].map(([dx, dy]) => ({ x: im.x + dx * cos - dy * sin, y: im.y + dx * sin + dy * cos }));
+}
+
+export function drawImages(
+  ctx: CanvasRenderingContext2D,
+  list: TabletImage[],
+  resolve: ImageResolver,
+): void {
+  for (const im of list) {
+    const el = resolve(im.src);
+    if (!el) continue;
+    ctx.save();
+    ctx.translate(im.x, im.y);
+    ctx.rotate(im.rot);
+    ctx.drawImage(el, -im.w / 2, -im.h / 2, im.w, im.h);
+    ctx.restore();
+  }
+}
+
+/**
+ * Where a note saved before stroke persistence lands when its picture is laid under
+ * the ink as a backdrop. The engine places it and the re-render has to agree with
+ * the engine to the pixel, or a note would move the moment its picture was refreshed.
+ */
+export function backdropBox(img: { width: number; height: number }): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+} {
+  const M = 40;
+  const k = Math.min((pageWidth() - 2 * M) / img.width, (PAGE_H - 2 * M) / img.height, 1.5);
+  return { x: M, y: M, w: img.width * k, h: img.height * k };
+}
+
+/** Everything a surface can carry, in the order it is painted. */
+export interface BoardLayers {
+  strokes: TabletStroke[];
+  images?: TabletImage[];
+  imageEl?: ImageResolver;
+  backdrop?: { el: CanvasImageSource; x: number; y: number; w: number; h: number } | null;
+  /** 'main' is what grading sees; 'all' takes the scratch column along too. */
+  zone?: 'main' | 'all';
+}
+
+/**
+ * One picture of a whole surface, cropped to what is on it. The live engine calls
+ * this for its exports and the notes store calls it to re-render a saved note, so a
+ * note re-rendered years later is the same image the editor would have made.
+ *
+ * Returns an empty url when there is nothing on the surface at all.
+ */
+export function renderBoard(layers: BoardLayers): { url: string; w: number; h: number } {
+  const zone = layers.zone ?? 'main';
+  const ink = zone === 'all' ? layers.strokes.slice() : layers.strokes.filter((s) => s.zone === 'main');
+  const pics = layers.images ?? [];
+  const bg = zone === 'all' ? (layers.backdrop ?? null) : null;
+  if (ink.length === 0 && !bg && pics.length === 0) return { url: '', w: 0, h: 0 };
+  const box = strokeBounds(ink);
+  let minX = box ? box.minX : Infinity;
+  let minY = box ? box.minY : Infinity;
+  let maxX = box ? box.maxX : -Infinity;
+  let maxY = box ? box.maxY : -Infinity;
+  // A pasted screenshot is part of the note, so the transcriber must be shown it
+  // and the crop must reach around it.
+  for (const im of pics) {
+    for (const p of imageCorners(im)) {
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x);
+      maxY = Math.max(maxY, p.y);
+    }
+  }
+  if (bg) {
+    minX = Math.min(minX, bg.x);
+    minY = Math.min(minY, bg.y);
+    maxX = Math.max(maxX, bg.x + bg.w);
+    maxY = Math.max(maxY, bg.y + bg.h);
+  }
+  minX -= EXPORT_MARGIN;
+  minY -= EXPORT_MARGIN;
+  maxX += EXPORT_MARGIN;
+  maxY += EXPORT_MARGIN;
+  const w = Math.max(1, maxX - minX);
+  const h = Math.max(1, maxY - minY);
+  // Long edge capped by the export setting; scale also capped so a single short
+  // line is not blown up into billboard glyphs (fewer pixels, fewer tokens). One
+  // rule for both surface shapes: a board that outgrows the cap is transcribed as
+  // several per-region images (exportInkTiles), so this image never has to carry a
+  // whole sprawling board's legibility on its own.
+  const k = Math.min(settings.export.maxEdgePx / Math.max(w, h), 1.6);
+  const out = document.createElement('canvas');
+  out.width = Math.max(1, Math.round(w * k));
+  out.height = Math.max(1, Math.round(h * k));
+  const ctx = out.getContext('2d');
+  if (!ctx) return { url: '', w: 0, h: 0 };
+  ctx.fillStyle = settings.canvas.backgroundColor;
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.setTransform(k, 0, 0, k, -minX * k, -minY * k);
+  if (bg) ctx.drawImage(bg.el, bg.x, bg.y, bg.w, bg.h);
+  drawImages(ctx, pics, layers.imageEl ?? (() => null));
+  drawStrokes(ctx, ink);
+  return {
+    url: out.toDataURL('image/jpeg', settings.export.jpegQuality),
+    w: out.width,
+    h: out.height,
+  };
 }
 
 // ---- geometry ----

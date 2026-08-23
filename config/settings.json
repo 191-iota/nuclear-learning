@@ -1,6 +1,6 @@
 {
   "canvas": {
-    "strokeColor": "#1a1a1a",
+    "strokeColor": "#1f2a37",
     "pressureMultiplier": 0.8,
     "backgroundColor": "#ffffff",
     "maxScale": 14
@@ -17,7 +17,7 @@
   "tablet": {
     "aspect": 1.6,
     "baseWidth": 1.2,
-    "smoothing": 0.35,
+    "smoothing": 0.5,
     "scratchShare": 0,
     "gridSize": 40
   },
@@ -45,8 +45,8 @@
     "embedModel": "text-embedding-3-small"
   },
   "export": {
-    "maxEdgePx": 1400,
-    "jpegQuality": 0.95,
+    "maxEdgePx": 1600,
+    "jpegQuality": 0.97,
     "paddingPx": 16
   },
   "scan": {

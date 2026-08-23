@@ -1,10 +1,33 @@
 <script setup lang="ts">
 import ConfirmButton from '@/components/ConfirmButton.vue';
+import { computed } from 'vue';
+import defaults from '@config/settings.json';
 import { modes, addMode, removeMode, resetModes } from '@/stores/modes';
 import { settings, resetSettings } from '@/stores/settings';
+import { applyInkColor, inkColorState, keptNotes, pendingNotes } from '@/stores/inkColor';
 import { MODELS, EFFORTS } from '@/models';
 
 const STYLES = ['spoken', 'chime', 'both'];
+
+const DEFAULT_INK = defaults.canvas.strokeColor.toLowerCase();
+
+/**
+ * What the notebook's pictures currently hold, in one line. The pictures are a render
+ * of the strokes and follow the ink; a note whose picture is not a render of strokes
+ * (a pasted screenshot, a capture from before ink was persisted) keeps its own and is
+ * counted separately rather than being quietly left out.
+ */
+const inkStatus = computed(() => {
+  const s = inkColorState;
+  if (s.running) return `rendering ${s.done + 1} of ${s.total}`;
+  const kept = keptNotes();
+  const tail = kept ? ` · ${kept} picture-only note${kept === 1 ? '' : 's'} kept as they are` : '';
+  if (s.baked.toLowerCase() !== settings.canvas.strokeColor.toLowerCase()) {
+    return `${pendingNotes()} still drawn in ${s.baked}${tail}`;
+  }
+  const n = pendingNotes();
+  return `${n} note picture${n === 1 ? '' : 's'} in this ink${tail}`;
+});
 
 /**
  * Model and effort are typed, not picked. The shipped list is offered as
@@ -154,7 +177,49 @@ function unknownModel(id: string): boolean {
             </div>
             <div class="field span-2">
               <label>Stroke smoothing ({{ Math.round(settings.tablet.smoothing * 100) }}%)</label>
-              <input v-model.number="settings.tablet.smoothing" type="range" min="0" max="0.7" step="0.05" />
+              <!-- Up to the engine's own ceiling: the slider used to stop at 0.7 while
+                   the engine accepted 0.85, so the strongest setting was unreachable. -->
+              <input v-model.number="settings.tablet.smoothing" type="range" min="0" max="0.85" step="0.05" />
+            </div>
+          </div>
+
+          <div class="eng-row">
+            <div class="field span-2">
+              <label>Ink colour</label>
+              <span class="inkpick">
+                <input v-model="settings.canvas.strokeColor" type="color" class="inkswatch" aria-label="Ink colour" />
+                <input v-model="settings.canvas.strokeColor" class="mono" type="text" spellcheck="false" autocapitalize="off" />
+                <button
+                  class="ghost"
+                  :disabled="settings.canvas.strokeColor.toLowerCase() === DEFAULT_INK"
+                  title="Back to the shipped ink"
+                  @click="settings.canvas.strokeColor = DEFAULT_INK"
+                >
+                  Default
+                </button>
+              </span>
+            </div>
+            <div class="field span-4">
+              <label>Notes already written</label>
+              <span class="inkstate">
+                <span class="mono">{{ inkStatus }}</span>
+                <button
+                  class="ghost"
+                  :disabled="inkColorState.running"
+                  title="Render every note picture again in the current ink. The strokes, the transcript and the date are untouched."
+                  @click="applyInkColor(true)"
+                >
+                  Render again
+                </button>
+              </span>
+              <span class="muted" style="font-size: 0.72rem; line-height: 1.5">
+                Dark and nearly colourless is what fine writing needs: an exponent, a prime and a
+                minus are resolved by brightness rather than by hue, and the shipped ink stops one
+                step short of black to take the glare out of a long session. Every stroke ever
+                written takes this colour the moment it is drawn again, and the picture each note
+                keeps for the notebook grid is re-rendered from those strokes in the background,
+                with nothing else about the note touched.
+              </span>
             </div>
           </div>
 
@@ -179,10 +244,18 @@ function unknownModel(id: string): boolean {
 
           <div class="row" style="margin-top: 0.4rem">
             <span class="muted" style="font-size: 0.72rem">
-              Holding Z (or the pen's barrel button) peels strokes off one after another and gets
-              quicker the longer you hold, so a short press can still stop on a single stroke while a
-              long one clears a board. Set the top speed equal to the starting speed for the old flat
-              rate.
+              Holding Z peels strokes off one after another and gets quicker the longer you hold, so
+              a short press can still stop on a single stroke while a long one clears a board. Set
+              the top speed equal to the starting speed for the old flat rate.
+            </span>
+          </div>
+
+          <div class="row" style="margin-top: 0.4rem">
+            <span class="muted" style="font-size: 0.72rem">
+              The pen's lower button is the eraser while you hold it, and hands the pen back the
+              moment you let go. On the notes board, Cmd+V drops a screenshot onto the page: tap it
+              with the pen to pick it up (drag to move, corners to resize, the grip above it to
+              turn), tap anywhere else to put it down and carry on writing.
             </span>
           </div>
 
