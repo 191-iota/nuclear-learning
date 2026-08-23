@@ -1,15 +1,20 @@
 import { onBeforeUnmount, reactive, watch, type Ref } from 'vue';
 import { settings } from '@/stores/settings';
-import { holdDue } from '@/composables/holdRepeat';
 import {
-  EXPORT_MARGIN,
+  PAGE_H,
+  backdropBox,
   baseWidth,
   bucketWidth,
   drawStrokes,
+  imageCorners as imgCorners,
+  inkAnchor,
+  drawImages as paintImages,
+  pageWidth as pageW,
   planInkTiles,
-  strokeBounds,
+  renderBoard,
   tileScale,
   widthFor,
+  type TabletImage,
   type TabletPoint,
   type TabletStroke,
   type TabletZone,
@@ -17,7 +22,7 @@ import {
 
 // The stroke model and the paint loop live in inkExport, which the notes store also
 // draws with. Re-exported here so the engine stays the one import a view needs.
-export type { TabletPoint, TabletStroke, TabletZone };
+export type { TabletImage, TabletPoint, TabletStroke, TabletZone };
 
 /**
  * Stroke-based ink engine for a graphics tablet (Wacom & friends) drawing straight
@@ -32,7 +37,9 @@ export type { TabletPoint, TabletStroke, TabletZone };
  *   half-scrubbed pixels between the lines.
  * - Input is lightly smoothed (EMA over position and pressure) so raw tablet jitter
  *   does not read as shaky handwriting; the final raw point is kept so tails and
- *   serifs are not cut off.
+ *   serifs are not cut off. What is drawn is a curve rather than the chain of
+ *   straight segments the samples arrive as (inkExport owns that), and the live pen
+ *   lays down exactly the same curve, so nothing changes shape when the pen lifts.
  * - The view can zoom and pan, but stroke width is defined in page units: ink
  *   written at any zoom has the same thickness ON THE PAGE, so a long derivation
  *   stays uniform.
@@ -50,21 +57,6 @@ export type { TabletPoint, TabletStroke, TabletZone };
  *   that exponents, fraction bars, and subscripts never touch the edge.
  */
 
-/**
- * A picture placed on the surface: a pasted screenshot, a dropped photo. Centre,
- * size and angle in page units, with the bytes carried inline so a note round-trips
- * through one blob. Ink is drawn over the top of these.
- */
-export interface TabletImage {
-  id: number;
-  src: string; // data URL
-  x: number; // centre
-  y: number;
-  w: number;
-  h: number;
-  rot: number; // radians
-}
-
 type Op =
   | { kind: 'add'; stroke: TabletStroke }
   | { kind: 'erase'; strokes: TabletStroke[] }
@@ -73,14 +65,20 @@ type Op =
   | { kind: 'imgXform'; id: number; before: TabletImage; after: TabletImage };
 
 export interface TabletState {
-  // hand = drag the surface; select = pick up the pictures on it
-  tool: 'pen' | 'eraser' | 'hand' | 'select';
+  // hand = drag the surface. Pictures have no tool of their own: they are picked up
+  // with the pen (see the pointer handlers).
+  tool: 'pen' | 'eraser' | 'hand';
   zoomPct: number;
   canUndo: boolean;
   canRedo: boolean;
   hasInk: boolean; // main-zone ink (what grading gates on)
   hasImages: boolean; // at least one picture placed on the surface
   hasSelection: boolean; // a picture is picked up, so Delete has a target
+  lockedImages: number; // pictures pinned to the surface, so the dock can offer them back
+  // Monotonic revision of everything on the surface. Reactive on purpose: it is what
+  // the notes editor autosaves against, so a stroke, an erase, an undo or a picture
+  // being moved all read as "there is something new to write to disk".
+  rev: number;
 }
 
 export interface UseTabletOptions {
@@ -96,7 +94,6 @@ export interface UseTabletOptions {
   probeName?: string;
 }
 
-const PAGE_H = 1000;
 const MAX_UNDO = 200;
 const MIN_Z = 1;
 const MAX_Z = 8;
@@ -127,16 +124,13 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     hasInk: false,
     hasImages: false,
     hasSelection: false,
+    lockedImages: 0,
+    rev: 0,
   });
 
   // View: zoom factor over the fit scale, plus the page point at the viewport centre.
   const view = { z: 1, cx: 0, cy: 0 };
   let viewInit = false;
-
-  function pageW(): number {
-    const a = Number(settings.tablet.aspect) || 1.6;
-    return Math.round(PAGE_H * Math.min(2.4, Math.max(0.8, a)));
-  }
 
   function scratchX(): number {
     if (options.scratch === false) return Infinity;
@@ -176,32 +170,52 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     maxY: number;
   }
 
-  // What the board actually holds: the ink and backdrop, unioned with one nominal
-  // page at the origin. Keeping that home sheet in the union means Fit never blows
-  // a single short stroke up to fill the screen, and the starting area stays findable.
-  function contentBox(): Box {
-    const b: Box = { minX: 0, minY: 0, maxX: pageW(), maxY: PAGE_H };
+  /**
+   * What is actually ON the board: ink, pictures, and the backdrop, and nothing else.
+   * Null when the board is empty.
+   *
+   * Fitting to this rather than to the box below is what makes reopening a note land
+   * on the note. A board is unbounded, so a page written a few screens down from the
+   * origin is a perfectly ordinary thing to have; framing it TOGETHER with the empty
+   * home sheet put the writing in a corner of a mostly blank screen, zoomed out by
+   * however far from the origin it happened to be.
+   */
+  function drawnBox(): Box | null {
+    let b: Box | null = null;
+    const grow = (x: number, y: number) => {
+      if (!b) b = { minX: x, minY: y, maxX: x, maxY: y };
+      else {
+        if (x < b.minX) b.minX = x;
+        if (y < b.minY) b.minY = y;
+        if (x > b.maxX) b.maxX = x;
+        if (y > b.maxY) b.maxY = y;
+      }
+    };
     for (const s of strokes) {
-      if (s.minX < b.minX) b.minX = s.minX;
-      if (s.minY < b.minY) b.minY = s.minY;
-      if (s.maxX > b.maxX) b.maxX = s.maxX;
-      if (s.maxY > b.maxY) b.maxY = s.maxY;
+      grow(s.minX, s.minY);
+      grow(s.maxX, s.maxY);
     }
     // A picture counts as content, so Fit frames it and the board can be panned
     // around one even before a single stroke is written near it.
-    for (const im of images) {
-      for (const p of imgCorners(im)) {
-        if (p.x < b.minX) b.minX = p.x;
-        if (p.y < b.minY) b.minY = p.y;
-        if (p.x > b.maxX) b.maxX = p.x;
-        if (p.y > b.maxY) b.maxY = p.y;
-      }
-    }
+    for (const im of images) for (const p of imgCorners(im)) grow(p.x, p.y);
     if (backdropRect) {
-      b.minX = Math.min(b.minX, backdropRect.x);
-      b.minY = Math.min(b.minY, backdropRect.y);
-      b.maxX = Math.max(b.maxX, backdropRect.x + backdropRect.w);
-      b.maxY = Math.max(b.maxY, backdropRect.y + backdropRect.h);
+      grow(backdropRect.x, backdropRect.y);
+      grow(backdropRect.x + backdropRect.w, backdropRect.y + backdropRect.h);
+    }
+    return b;
+  }
+
+  // Everything above, unioned with one nominal page at the origin. This is the box
+  // panning is bounded by, so the starting area always stays reachable however far
+  // out the writing has gone.
+  function contentBox(): Box {
+    const b: Box = { minX: 0, minY: 0, maxX: pageW(), maxY: PAGE_H };
+    const d = drawnBox();
+    if (d) {
+      b.minX = Math.min(b.minX, d.minX);
+      b.minY = Math.min(b.minY, d.minY);
+      b.maxX = Math.max(b.maxX, d.maxX);
+      b.maxY = Math.max(b.maxY, d.maxY);
     }
     return b;
   }
@@ -400,30 +414,62 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
   let active: ActiveStroke | null = null;
   let erasing: { pointerId: number; removed: TabletStroke[] } | null = null;
   let panning: { pointerId: number; lastX: number; lastY: number } | null = null;
+  // A press over the pictures, whose meaning the next move or the release settles.
+  // `down` is the pointerdown itself, kept so a stroke that turns out to be a stroke
+  // still starts where the pen actually landed.
+  let pending: { pointerId: number; down: PointerEvent; pick: TabletImage | null } | null = null;
   let lastErase: { x: number; y: number } | null = null;
   let lastDown: { type: string; button: number; buttons: number } | null = null;
+  // A short log of what the driver actually sent, readable via `__nlInk().recent` (or
+  // `__nlTablet().recent`). Pen buttons behave differently on every driver and none of
+  // it can be reasoned about from in here, so a gesture that misbehaves can be pressed
+  // once and then read back exactly as the browser received it. Moves are only logged
+  // while the barrel button is held, and only when they say something new, so an erase
+  // pass does not flood the buffer with its own repetition.
+  const recent: string[] = [];
+  const TRACE_MAX = 40;
+  let lastTrace = '';
+
+  function trace(e: PointerEvent): void {
+    const move = e.type === 'pointermove';
+    if (move && !buttonErase) return;
+    const sig = `${e.type.slice(7)} ${e.pointerType} b${e.button} B${e.buttons} ${e.pressure > 0 ? 'tip' : 'hover'}`;
+    if (move && sig === lastTrace) return;
+    lastTrace = sig;
+    recent.push(`${sig} → ${state.tool}${erasing ? ' erasing' : ''}`);
+    if (recent.length > TRACE_MAX) recent.shift();
+  }
   // A backdrop layer under the strokes: a note saved before stroke persistence
   // reopens with its image here, so it can be continued instead of staying a dead
   // snapshot. Included in exports, never erasable, never part of undo.
   let backdrop: HTMLImageElement | null = null;
   let backdropRect: { x: number; y: number; w: number; h: number } | null = null;
 
-  function setBackdrop(dataUrl: string | null): void {
+  /**
+   * Resolves once the picture has been decoded and placed, so a caller that is about
+   * to fit the view can wait for the layer that decides how big the board is. Before
+   * it resolved, a note whose only content is its backdrop was fitted against an
+   * empty board.
+   */
+  function setBackdrop(dataUrl: string | null): Promise<void> {
     if (!dataUrl) {
       backdrop = null;
       backdropRect = null;
       scheduleRender();
-      return;
+      return Promise.resolve();
     }
-    const img = new Image();
-    img.onload = () => {
-      const M = 40;
-      const k = Math.min((pageW() - 2 * M) / img.width, (PAGE_H - 2 * M) / img.height, 1.5);
-      backdrop = img;
-      backdropRect = { x: M, y: M, w: img.width * k, h: img.height * k };
-      scheduleRender();
-    };
-    img.src = dataUrl;
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        backdrop = img;
+        backdropRect = backdropBox(img);
+        scheduleRender();
+        resolve();
+      };
+      // A backdrop that will not decode is a missing layer, never a stuck caller.
+      img.onerror = () => resolve();
+      img.src = dataUrl;
+    });
   }
 
   // ---- pictures on the surface ----
@@ -432,6 +478,11 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
   // up, resized, turned and thrown away, and ink goes over the top of it. The
   // backdrop above stays what it always was, a fixed under-layer for notes saved
   // before strokes were persisted; this is the layer you can actually work with.
+  //
+  // They have no tool of their own. Reaching for a "Pictures" mode to nudge a
+  // screenshot, and remembering to leave it again before writing the next line, is
+  // more bookkeeping than the job is worth: the pen taps a picture to pick it up and
+  // taps off it to put it down (see onPointerDown). Neither tap leaves ink.
   //
   // Geometry is centre plus half-extent plus an angle, because that is what makes
   // rotation and corner-resize simple: every hit test moves the pointer into the
@@ -453,6 +504,9 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
 
   const HANDLE_PX = 9; // on screen, so handles stay grabbable at any zoom
   const ROTATE_ARM_PX = 26;
+  // How far a press may travel and still count as a tap rather than the start of a
+  // stroke. On screen, because it is a property of the hand, not of the zoom.
+  const TAP_PX = 4;
 
   /** Decoded once per source and kept, so a redraw never waits on the image. */
   function imgEl(src: string): HTMLImageElement | null {
@@ -469,20 +523,6 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     return images.find((i) => i.id === id);
   }
 
-  /** The four corners in page space, clockwise from top-left of the unrotated box. */
-  function imgCorners(im: TabletImage): { x: number; y: number }[] {
-    const hw = im.w / 2;
-    const hh = im.h / 2;
-    const cos = Math.cos(im.rot);
-    const sin = Math.sin(im.rot);
-    return [
-      [-hw, -hh],
-      [hw, -hh],
-      [hw, hh],
-      [-hw, hh],
-    ].map(([dx, dy]) => ({ x: im.x + dx * cos - dy * sin, y: im.y + dx * sin + dy * cos }));
-  }
-
   /** The pointer expressed in the picture's own unrotated frame. */
   function toLocal(im: TabletImage, x: number, y: number): { x: number; y: number } {
     const cos = Math.cos(-im.rot);
@@ -497,10 +537,15 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     return Math.abs(l.x) <= im.w / 2 && Math.abs(l.y) <= im.h / 2;
   }
 
-  /** Topmost picture under the pointer; later ones are drawn on top, so search back. */
+  /**
+   * Topmost picture under the pointer; later ones are drawn on top, so search back.
+   * A locked one is invisible to this, which is the whole of what locking does: the
+   * press over it is never a tap on a picture, so it becomes ink without the wait
+   * that deciding between the two costs.
+   */
   function imageAt(x: number, y: number): TabletImage | null {
     for (let i = images.length - 1; i >= 0; i -= 1) {
-      if (pointInImage(images[i], x, y)) return images[i];
+      if (!images[i].locked && pointInImage(images[i], x, y)) return images[i];
     }
     return null;
   }
@@ -521,16 +566,9 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     return null;
   }
 
+  /** The shared painter, fed from this surface's own decode cache. */
   function drawImages(ctx: CanvasRenderingContext2D, list: TabletImage[]): void {
-    for (const im of list) {
-      const el = imgEl(im.src);
-      if (!el) continue;
-      ctx.save();
-      ctx.translate(im.x, im.y);
-      ctx.rotate(im.rot);
-      ctx.drawImage(el, -im.w / 2, -im.h / 2, im.w, im.h);
-      ctx.restore();
-    }
+    paintImages(ctx, list, imgEl);
   }
 
   /** Selection frame and grips, screen-sized so they do not scale with the zoom. */
@@ -578,8 +616,10 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
 
   /**
    * Drop a picture on the surface, sized to sit comfortably in the current view and
-   * centred on it, then select it and switch to the move tool so it can be placed
-   * straight away. Pasting used to leave the editor entirely and make a new note.
+   * centred on it, then select it so it can be dragged into place straight away. The
+   * pen stays the pen: placing the picture is a drag, and the next tap off it is
+   * already writing again. Pasting used to leave the editor entirely and make a new
+   * note out of the screenshot.
    */
   function addImage(dataUrl: string): void {
     const el = new Image();
@@ -599,13 +639,15 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
         w: Math.max(8, el.width * k),
         h: Math.max(8, el.height * k),
         rot: 0,
+        // Written out rather than left off, so an undo of a lock has a false to
+        // restore instead of a missing key that Object.assign would skip.
+        locked: false,
       };
       imgEls.set(dataUrl, el);
       images.push(im);
       pushOp({ kind: 'imgAdd', img: { ...im } });
       bump();
       selectImage(im.id);
-      state.tool = 'select';
       scheduleRender();
     };
     el.src = dataUrl;
@@ -621,9 +663,44 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     scheduleRender();
   }
 
-  function toggleSelect(): void {
-    state.tool = state.tool === 'select' ? 'pen' : 'select';
-    if (state.tool !== 'select') selectImage(0);
+  /** Put the held picture down. Esc reaches for this before it closes anything. */
+  function clearSelection(): void {
+    selectImage(0);
+  }
+
+  /**
+   * Pin the held picture to the surface and let go of it. From here the pen writes
+   * over it as if it were paper: no frame, no grips, and no press near its edge that
+   * turns out to have moved it instead of drawing.
+   *
+   * Recorded as an ordinary transform, so undo takes the lock back off.
+   */
+  function lockSelectedImage(): void {
+    const im = imageById(selectedImg);
+    if (!im || im.locked) return;
+    const before = { ...im };
+    im.locked = true;
+    pushOp({ kind: 'imgXform', id: im.id, before, after: { ...im } });
+    selectImage(0);
+    bump();
+    scheduleRender();
+  }
+
+  /**
+   * Hand every pinned picture back. A locked picture cannot be tapped by definition,
+   * so the way out cannot be on the picture itself; it is one dock button that names
+   * how many it is about to release.
+   */
+  function unlockImages(): void {
+    const locked = images.filter((im) => im.locked);
+    if (!locked.length) return;
+    for (const im of locked) {
+      const before = { ...im };
+      im.locked = false;
+      pushOp({ kind: 'imgXform', id: im.id, before, after: { ...im } });
+    }
+    bump();
+    scheduleRender();
   }
 
   function getImages(): TabletImage[] {
@@ -636,10 +713,11 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     state.hasSelection = false;
     for (const im of list) {
       if (!im?.src || !Number.isFinite(im.w) || !Number.isFinite(im.h)) continue;
-      images.push({ ...im, rot: Number.isFinite(im.rot) ? im.rot : 0 });
+      images.push({ ...im, rot: Number.isFinite(im.rot) ? im.rot : 0, locked: Boolean(im.locked) });
       if (im.id >= nextId) nextId = im.id + 1;
     }
     state.hasImages = images.length > 0;
+    state.lockedImages = images.filter((im) => im.locked).length;
     scheduleRender();
   }
 
@@ -675,12 +753,17 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
 
   function bump(): void {
     rev += 1;
+    state.rev = rev;
     state.canUndo = undoStack.length > 0;
     state.canRedo = redoStack.length > 0;
     state.hasInk = strokes.some((s) => s.zone === 'main');
     // A board holding only a pasted screenshot is still worth saving.
     state.hasImages = images.length > 0;
+    state.lockedImages = images.filter((im) => im.locked).length;
     if (selectedImg && !imageById(selectedImg)) selectImage(0);
+    // Undo can put a lock back on the picture currently held; the frame around it
+    // would then offer grips that no longer do anything.
+    if (selectedImg && imageById(selectedImg)?.locked) selectImage(0);
   }
 
   function pushOp(op: Op): void {
@@ -740,7 +823,13 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     const next: TabletPoint = { x, y, p: pr };
     s.pts.push(next);
     growBbox(s, next);
-    // Incremental draw of just the fresh segment keeps the pen latency at one frame.
+    // Incremental draw of just the fresh piece keeps the pen latency at one frame.
+    // It lays down the SAME curve the finished stroke is drawn with (inkAnchor), so
+    // the ink never re-shapes itself the moment the pen lifts. The piece drawn is the
+    // one that has settled: the curve through the point before last. The half segment
+    // still open at the tip is a fraction of a millimetre of writing behind the nib,
+    // and drawing it straight would leave a whisker sticking out of every corner
+    // until the redraw.
     const ctx = context();
     if (ctx) {
       const S = scale(c);
@@ -750,9 +839,18 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
       ctx.lineJoin = 'round';
       ctx.strokeStyle = settings.canvas.strokeColor;
       ctx.lineWidth = bucketWidth(widthFor(s, next.p));
+      const n = s.pts.length;
       ctx.beginPath();
-      ctx.moveTo(prev.x, prev.y);
-      ctx.lineTo(next.x, next.y);
+      if (n >= 3) {
+        const from = inkAnchor(s.pts, n - 3);
+        const to = inkAnchor(s.pts, n - 2);
+        ctx.moveTo(from.x, from.y);
+        ctx.quadraticCurveTo(s.pts[n - 2].x, s.pts[n - 2].y, to.x, to.y);
+      } else {
+        // Two points are still a straight line in the finished stroke too.
+        ctx.moveTo(prev.x, prev.y);
+        ctx.lineTo(next.x, next.y);
+      }
       ctx.stroke();
     }
   }
@@ -914,13 +1012,32 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     zoomAt(c, c.width / 2, c.height / 2, factor);
   }
 
+  // A fit asked for while the canvas has no size yet, kept until it has one. The
+  // notes editor fills a board (strokes, pictures, backdrop) before the canvas is
+  // mounted, so the fit that followed had nothing to measure and quietly fell through
+  // to the home page. A note written far out on the board then opened a screen or two
+  // away from its own writing, with nothing on screen to say which way to scroll.
+  let wantFit = false;
+
   // Page: back to the whole sheet at 100%. Board: fit everything written, which is
   // the only way to find ink you panned away from — and it never zooms IN past 100%,
   // so a nearly empty board does not blow two words up to fill the screen.
   function resetView(): void {
     const c = canvasRef.value;
+    if (options.board && (!c || c.width < 2 || c.height < 2)) {
+      wantFit = true; // resize() runs it the moment there is something to measure
+      return;
+    }
+    wantFit = false;
+    // Whatever is computed here IS the opening view, so say so. ensureView only ever
+    // runs from a redraw that has a canvas, and until this board had one it had never
+    // run at all: the fit below landed correctly and the first frame after it then
+    // replaced it with the home page, which is the y offset a reopened note showed.
+    ensureView();
     if (options.board && c) {
-      const b = contentBox();
+      // The writing itself, and the home page only when there is no writing. Zoom is
+      // still capped at 100%, which is what keeps two words from filling the screen.
+      const b = drawnBox() ?? contentBox();
       const w = Math.max(1, b.maxX - b.minX);
       const h = Math.max(1, b.maxY - b.minY);
       const base = fitScale(c);
@@ -937,39 +1054,70 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     scheduleRender();
   }
 
-  // ---- hold-to-repeat undo (pen barrel button) ----
+  // ---- the pen's lower barrel button: hold it to erase ----
 
-  // Keep the undo button pressed and strokes peel off one after another, faster the
-  // longer it is held (holdRepeat owns the curve); a single click still removes
-  // exactly one. Stops on release (up, cancel, or a move that shows the button no
-  // longer down) and when the undo stack runs dry.
+  // The button is a held modifier, not a command: press it and the pen is the eraser,
+  // let go and it is whatever it was before. That is the one thing a pen button is
+  // for on every other writing surface, and it is the gesture that removes a symbol
+  // without a hand leaving the tablet to reach for a key.
   //
-  // The timer only asks "is one due yet"; it does not set the pace itself, so it ticks
-  // well under the shortest gap the ramp can reach. Pacing it by the interval instead
-  // would quantise the acceleration to the timer's own resolution.
-  const HOLD_TICK_MS = 10;
-  let holdUndo: { pointerId: number; timer: number; started: number; last: number } | null = null;
+  // It used to fire undo (and repeat while held). Undo keeps the keyboard, its own
+  // hold ramp there, and the tooldock button; erasing had neither.
+  //
+  // Accepted from any pointer type, because the driver may report the pen as a mouse,
+  // and the canvas suppresses the context menu anyway.
+  //
+  // Drivers disagree about everything else, so nothing here trusts a single signal:
+  //
+  // - The press may arrive while the pen hovers (button 2), or only once the tip lands
+  //   with the button already down (buttons bit 2). Either latches the eraser.
+  // - The tip landing while the button is held may be reported as a fresh pointerdown,
+  //   or as nothing at all: a barrel button mapped to right-click makes the whole thing
+  //   ONE right-button drag, where the contact only ever shows up in pointermove. So
+  //   movement with the tip down starts the erasing even when no pointerdown came.
+  // - `buttons` may not carry bit 1 on that contact (a right-drag is reported as
+  //   button 2 alone), so contact is read from the tip pressure as well.
+  // - `buttons` may not carry bit 2 after the press either. Taking that silence for a
+  //   release would drop the eraser on the first move, so the bit is only believed as
+  //   a release signal once the driver has been seen reporting it at all.
+  let buttonErase: { pointerId: number; tool: TabletState['tool']; sawBit: boolean } | null = null;
 
-  function stopHoldUndo(): void {
-    if (!holdUndo) return;
-    window.clearInterval(holdUndo.timer);
-    holdUndo = null;
+  /** Is the tip actually on the tablet? Pens report their pressure, and a mouse
+   *  reports 0.5 whenever a button is down, which is the same question for a mouse. */
+  function inContact(e: PointerEvent): boolean {
+    return (e.buttons & 1) !== 0 || e.pressure > 0;
   }
 
-  function startHoldUndo(pointerId: number): void {
-    stopHoldUndo();
-    const state = { pointerId, timer: 0, started: performance.now(), last: 0 };
-    state.timer = window.setInterval(() => {
-      const now = performance.now();
-      if (!holdDue(state.started, state.last, now)) return;
-      if (undoStack.length === 0) {
-        stopHoldUndo();
-        return;
-      }
-      state.last = now;
-      undo();
-    }, HOLD_TICK_MS);
-    holdUndo = state;
+  function startButtonErase(e: PointerEvent): void {
+    if (buttonErase) return;
+    // sawBit starts false however this press was reported: the question it answers is
+    // whether the driver keeps mentioning the button AFTER the press, and the press
+    // itself is no evidence of that.
+    buttonErase = { pointerId: e.pointerId, tool: state.tool, sawBit: false };
+    state.tool = 'eraser';
+  }
+
+  /** Give the pen back whatever it was holding before the button went down. */
+  function endButtonErase(): void {
+    if (!buttonErase) return;
+    state.tool = buttonErase.tool;
+    buttonErase = null;
+  }
+
+  // A button released between two events (the pen left the tablet, the window lost
+  // focus, a driver that skips the up) would otherwise leave the pen stuck erasing.
+  function checkButtonRelease(e: PointerEvent): void {
+    if (!buttonErase || e.pointerId !== buttonErase.pointerId) return;
+    if ((e.buttons & 2) !== 0) {
+      buttonErase.sawBit = true;
+      return;
+    }
+    // Mid-gesture silence about the button is only a release from a driver that talks
+    // about it. From any other, the button's OWN pointerup is the release, and the
+    // tip's is not: lifting the pen between two rubs must not drop the eraser.
+    if (!buttonErase.sawBit && !(e.type === 'pointerup' && e.button === 2)) return;
+    endButtonErase();
+    if (erasing && erasing.pointerId === e.pointerId) endErase();
   }
 
   // ---- event handlers ----
@@ -977,6 +1125,7 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
   function onPointerDown(e: PointerEvent): void {
     const c = canvasRef.value;
     if (!c) return;
+    trace(e);
     // What the driver actually sends, readable via __nlTablet().lastDown — pen
     // button mysteries become facts instead of guesses.
     lastDown = { type: e.pointerType, button: e.button, buttons: e.buttons };
@@ -993,46 +1142,17 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
       panning = { pointerId: e.pointerId, lastX: e.clientX, lastY: e.clientY };
       return;
     }
-    // The pen's lower barrel button = undo, whichever way the driver reports it: a
-    // press while hovering (button 2) or the tip landing with the button held
-    // (buttons bit 2). Accepted from any pointer type so a driver that reports the
-    // pen as a mouse still works; the canvas suppresses the context menu anyway.
+    // The barrel button, down: the pen becomes the eraser until it is let go.
     if (e.button === 2 || (e.buttons & 2) !== 0) {
-      undo();
-      startHoldUndo(e.pointerId);
-      return;
-    }
-    // The move tool: pictures are picked up rather than written on. A grip of the
-    // picture already selected wins over the picture under the pointer, so a corner
-    // that overhangs a neighbour still resizes what you meant.
-    if (state.tool === 'select' && e.button === 0) {
-      const pt = toPage(c, e.clientX, e.clientY);
-      const sel = imageById(selectedImg);
-      const grip = sel ? gripAt(sel, pt.x, pt.y, scale(c)) : null;
-      if (sel && grip) {
-        imgDrag = {
-          pointerId: e.pointerId,
-          mode: grip.mode,
-          corner: grip.corner,
-          startX: pt.x,
-          startY: pt.y,
-          before: { ...sel },
-        };
-        return;
-      }
-      const hit = imageAt(pt.x, pt.y);
-      selectImage(hit ? hit.id : 0);
-      if (hit) {
-        imgDrag = {
-          pointerId: e.pointerId,
-          mode: 'move',
-          corner: 0,
-          startX: pt.x,
-          startY: pt.y,
-          before: { ...hit },
-        };
-      }
-      return;
+      // A stroke under the pen is finished first. The button changes the tool in the
+      // middle of a gesture, and half a letter must not be carried into the eraser.
+      if (active && e.pointerId === active.pointerId) endStroke();
+      pending = null;
+      startButtonErase(e);
+      // Usually the press arrives while the pen hovers, and there is nothing to lift
+      // until the tip is down. Fall through only when it already is, which is a
+      // question about contact rather than about which bits the driver sets.
+      if (!inContact(e)) return;
     }
     if (isEraserPointer(e) || state.tool === 'eraser') {
       erasing = { pointerId: e.pointerId, removed: [] };
@@ -1042,6 +1162,37 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
       return;
     }
     if (e.button !== 0) return;
+    // The pen, over pictures. A picture that is already held owns the pointer: its
+    // grips resize and turn it, its body drags it. A grip wins over the picture under
+    // the pointer, so a corner that overhangs a neighbour still resizes what you meant.
+    const pt = toPage(c, e.clientX, e.clientY);
+    const sel = imageById(selectedImg);
+    if (sel && !sel.locked) {
+      const grip = gripAt(sel, pt.x, pt.y, scale(c));
+      if (grip || pointInImage(sel, pt.x, pt.y)) {
+        imgDrag = {
+          pointerId: e.pointerId,
+          mode: grip ? grip.mode : 'move',
+          corner: grip ? grip.corner : 0,
+          startX: pt.x,
+          startY: pt.y,
+          before: { ...sel },
+        };
+        return;
+      }
+    }
+    // Anywhere a picture is involved, the press has two possible meanings and the
+    // pointer decides which: travel from here and it was a stroke (written over the
+    // picture, which is the point of ink sitting on top of them), lift without
+    // travelling and it was a tap that picks a picture up or puts one down. So a tap
+    // to select never leaves a dot behind, and a tap to deselect never starts a new
+    // note off with a speck of ink.
+    const hit = imageAt(pt.x, pt.y);
+    if (sel || hit) {
+      pending = { pointerId: e.pointerId, down: e, pick: hit };
+      return;
+    }
+    // The ordinary case, with no picture anywhere near: writing starts on contact.
     beginStroke(c, e);
   }
 
@@ -1056,9 +1207,33 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
   function onPointerMove(e: PointerEvent): void {
     const c = canvasRef.value;
     if (!c) return;
-    // A hovering pen streams moves; the moment the barrel button is no longer down
-    // the hold ends, even if the matching pointerup got lost.
-    if (holdUndo && e.pointerId === holdUndo.pointerId && (e.buttons & 2) === 0) stopHoldUndo();
+    trace(e);
+    // A hovering pen streams moves, so this catches a barrel button let go off the
+    // surface, or one whose pointerup never arrived.
+    checkButtonRelease(e);
+    // With the button held, the tip touching down is what starts the erasing, whether
+    // or not the driver announced it with a pointerdown. A barrel button mapped to
+    // right-click reports the whole gesture as one drag, so the contact arrives here
+    // and nowhere else; without this the eraser looked switched on and rubbed nothing
+    // out. Lifting the tip closes the erase, so each pass is its own undo step.
+    if (buttonErase && e.pointerId === buttonErase.pointerId && !panning && !active && !imgDrag) {
+      if (inContact(e) && !erasing) erasing = { pointerId: e.pointerId, removed: [] };
+      else if (!inContact(e) && erasing && erasing.pointerId === e.pointerId) endErase();
+    }
+    if (pending && e.pointerId === pending.pointerId) {
+      const dx = e.clientX - pending.down.clientX;
+      const dy = e.clientY - pending.down.clientY;
+      if (dx * dx + dy * dy < TAP_PX * TAP_PX) return; // still could be a tap
+      // Far enough to be writing. The stroke starts at the pointerdown, so the wait
+      // costs nothing of the letter. Writing anywhere but on the held picture puts it
+      // down, the same as tapping off it: the hand has moved on.
+      const start = pending.down;
+      pending = null;
+      if (selectedImg) selectImage(0);
+      beginStroke(c, start);
+      appendPoint(c, e);
+      return;
+    }
     if (panning && e.pointerId === panning.pointerId) {
       const rect = c.getBoundingClientRect();
       const S = scale(c);
@@ -1138,7 +1313,20 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
 
   function onPointerUp(e: PointerEvent): void {
     const c = canvasRef.value;
-    if (holdUndo && e.pointerId === holdUndo.pointerId) stopHoldUndo();
+    trace(e);
+    // The barrel button's own release, or the tip's with the button already off it.
+    // `buttons` here is the state AFTER this release, so letting the button go while
+    // the tip stays down ends the erasing, and lifting the tip while the button stays
+    // down keeps the eraser for the next touch.
+    checkButtonRelease(e);
+    // A press that never travelled: the tap picks up the picture under it, or puts
+    // the held one down. No ink either way.
+    if (pending && e.pointerId === pending.pointerId) {
+      const pick = pending.pick;
+      pending = null;
+      selectImage(pick ? pick.id : 0);
+      return;
+    }
     if (imgDrag && e.pointerId === imgDrag.pointerId) {
       endImgDrag();
       return;
@@ -1159,7 +1347,9 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
   }
 
   function onPointerCancel(e: PointerEvent): void {
-    if (holdUndo && e.pointerId === holdUndo.pointerId) stopHoldUndo();
+    trace(e);
+    if (buttonErase && e.pointerId === buttonErase.pointerId) endButtonErase();
+    if (pending && e.pointerId === pending.pointerId) pending = null;
     if (imgDrag && e.pointerId === imgDrag.pointerId) endImgDrag();
     if (panning && e.pointerId === panning.pointerId) panning = null;
     if (erasing && e.pointerId === erasing.pointerId) endErase();
@@ -1214,6 +1404,7 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
 
   function onWindowBlur(): void {
     spaceDown = false; // a key released outside the window would never be seen
+    endButtonErase(); // nor a barrel button, which would leave the pen erasing
   }
 
   function attach(c: HTMLCanvasElement): void {
@@ -1226,7 +1417,8 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
   }
 
   function detach(c: HTMLCanvasElement): void {
-    stopHoldUndo();
+    endButtonErase();
+    pending = null;
     c.removeEventListener('pointerdown', onPointerDown);
     c.removeEventListener('pointermove', onPointerMove);
     c.removeEventListener('pointerup', onPointerUp);
@@ -1270,7 +1462,6 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
   onBeforeUnmount(() => {
     const c = canvasRef.value;
     if (c) detach(c);
-    stopHoldUndo();
     if (typeof window !== 'undefined') {
       window.removeEventListener('keydown', onSpaceDown);
       window.removeEventListener('keyup', onSpaceUp);
@@ -1294,7 +1485,10 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
       c.width = w;
       c.height = h;
     }
-    redraw();
+    // A fit that was asked for before this canvas existed happens here, now that the
+    // board can actually be measured against it.
+    if (wantFit) resetView();
+    else redraw();
   }
 
   function clear(): void {
@@ -1312,10 +1506,12 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     backdropRect = null;
     images.length = 0;
     imgDrag = null;
+    pending = null;
     selectedImg = 0;
     state.hasSelection = false;
     state.hasImages = false;
-    stopHoldUndo();
+    state.lockedImages = 0;
+    endButtonErase();
     bump();
     redraw();
   }
@@ -1333,58 +1529,19 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
   let lastExport = { w: 0, h: 0 };
 
   // 'main' is what grading sees; 'all' additionally takes the scratch column along
-  // (a note capture wants the whole page, side arithmetic included).
+  // (a note capture wants the whole page, side arithmetic included). The crop and the
+  // paint live in inkExport, because a saved note is re-rendered from its strokes long
+  // after this canvas is gone and the two pictures have to agree.
   function exportImage(zone: 'main' | 'all' = 'main'): string {
-    const main = zone === 'all' ? strokes.slice() : strokes.filter((s) => s.zone === 'main');
-    const bg = zone === 'all' && backdrop && backdropRect ? backdropRect : null;
-    const pics = images.slice();
-    if (main.length === 0 && !bg && pics.length === 0) return '';
-    const ink = strokeBounds(main);
-    let minX = ink ? ink.minX : Infinity;
-    let minY = ink ? ink.minY : Infinity;
-    let maxX = ink ? ink.maxX : -Infinity;
-    let maxY = ink ? ink.maxY : -Infinity;
-    // A pasted screenshot is part of the note, so the transcriber must be shown it
-    // and the crop must reach around it.
-    for (const im of pics) {
-      for (const p of imgCorners(im)) {
-        minX = Math.min(minX, p.x);
-        minY = Math.min(minY, p.y);
-        maxX = Math.max(maxX, p.x);
-        maxY = Math.max(maxY, p.y);
-      }
-    }
-    if (bg) {
-      minX = Math.min(minX, bg.x);
-      minY = Math.min(minY, bg.y);
-      maxX = Math.max(maxX, bg.x + bg.w);
-      maxY = Math.max(maxY, bg.y + bg.h);
-    }
-    minX -= EXPORT_MARGIN;
-    minY -= EXPORT_MARGIN;
-    maxX += EXPORT_MARGIN;
-    maxY += EXPORT_MARGIN;
-    const w = Math.max(1, maxX - minX);
-    const h = Math.max(1, maxY - minY);
-    // Long edge capped by the export setting; scale also capped so a single short
-    // line is not blown up into billboard glyphs (fewer pixels, fewer tokens). One
-    // rule for both surface shapes: a board that outgrows the cap is transcribed as
-    // several per-region images (exportInkTiles), so this image never has to carry a
-    // whole sprawling board's legibility on its own.
-    const k = Math.min(settings.export.maxEdgePx / Math.max(w, h), 1.6);
-    const out = document.createElement('canvas');
-    out.width = Math.max(1, Math.round(w * k));
-    out.height = Math.max(1, Math.round(h * k));
-    lastExport = { w: out.width, h: out.height };
-    const ctx = out.getContext('2d');
-    if (!ctx) return '';
-    ctx.fillStyle = settings.canvas.backgroundColor;
-    ctx.fillRect(0, 0, out.width, out.height);
-    ctx.setTransform(k, 0, 0, k, -minX * k, -minY * k);
-    if (bg && backdrop) ctx.drawImage(backdrop, bg.x, bg.y, bg.w, bg.h);
-    drawImages(ctx, pics);
-    drawStrokes(ctx, main);
-    return out.toDataURL('image/jpeg', settings.export.jpegQuality);
+    const out = renderBoard({
+      strokes,
+      images,
+      imageEl: imgEl,
+      backdrop: backdrop && backdropRect ? { el: backdrop, ...backdropRect } : null,
+      zone,
+    });
+    if (out.url) lastExport = { w: out.w, h: out.h };
+    return out.url;
   }
 
   // Console probe: __nlTablet() for the math pad, __nlInk() for the notes board.
@@ -1402,6 +1559,10 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
       canUndo: state.canUndo,
       canRedo: state.canRedo,
       lastDown,
+      // The last few pointer events as the driver sent them. Press the pen's button,
+      // try the gesture that misbehaves, then read this back.
+      recent: recent.slice(),
+      erasing: Boolean(erasing),
       // Which surface shape this is, and how far it has grown.
       board: Boolean(options.board),
       // Pictures on the surface. "images: 0" right after a paste means the paste
@@ -1416,6 +1577,9 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
         w: Math.round(im.w),
         h: Math.round(im.h),
         deg: Math.round((im.rot * 180) / Math.PI),
+        // A picture that will not respond to the pen is either locked or somewhere
+        // other than where it looks; this says which.
+        locked: Boolean(im.locked),
         loaded: Boolean(imgEls.get(im.src)?.complete),
       })),
       bbox: contentBox(),
@@ -1479,7 +1643,9 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     // Pictures on the surface
     addImage,
     deleteSelectedImage,
-    toggleSelect,
+    clearSelection,
+    lockSelectedImage,
+    unlockImages,
     getImages,
     setImages,
   };

@@ -2,9 +2,10 @@ import { settings } from '@/stores/settings';
 
 /**
  * The cadence of a held undo: how long before repeating starts, and how fast it goes
- * once it has. Three places drive the same behaviour (the pen's barrel button in the
- * ink engine, Z on the math pad, Z in the notes editor), so the timing lives here and
- * they all ask the same question rather than each carrying its own constants.
+ * once it has. Two places drive the same behaviour (Z on the math pad, Z in the notes
+ * editor), so the timing lives here and they both ask the same question rather than
+ * each carrying its own constants. The pen's barrel button used to be a third; it is
+ * the eraser now, and erasing needs no ramp because the pen is doing the aiming.
  *
  * Removal ACCELERATES the longer the button is down. A flat rate has to be one
  * compromise: quick enough to clear a paragraph without waiting, slow enough to stop

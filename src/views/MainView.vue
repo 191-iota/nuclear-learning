@@ -969,11 +969,11 @@ const connectionLabel = computed(() => {
           aria-label="Tablet writing area"
         />
         <div v-show="isTablet" class="tooldock" role="toolbar" aria-label="Ink tools">
-          <button :disabled="!tablet.state.canUndo" title="Undo stroke (Z, or the pen's barrel button)" @click="tablet.undo()">Undo</button>
+          <button :disabled="!tablet.state.canUndo" title="Undo stroke (Z; hold to remove several)" @click="tablet.undo()">Undo</button>
           <button :disabled="!tablet.state.canRedo" title="Redo (Y)" @click="tablet.redo()">Redo</button>
           <button
             :class="{ on: tablet.state.tool === 'eraser' }"
-            title="Stroke eraser (E)"
+            title="Stroke eraser (E). Holding the pen's lower button erases too, and lets go of it again."
             @click="tablet.toggleEraser()"
           >
             Eraser
