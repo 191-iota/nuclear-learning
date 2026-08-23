@@ -22,6 +22,14 @@ Two halves share one window, and the switch at the top says which one you are in
 
 You write with a Neo Smartpen on paper, its strokes streaming into the browser over Web Bluetooth, or with a graphics tablet straight onto the page. Either way a vision model reads the handwriting directly from the page image, so nothing gets typed and nothing gets photographed. Four buttons drive the loop: problem written, check, hint, finish. An ask box sits beside them for typed questions about the page in hand ("what if I substitute here?"), answered from your own route. Every reply comes back spoken, in Swiss German.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/pad-dark.png">
+    <img src="docs/pad-light.png" alt="the solving pad: a quadratic worked out by hand on the tablet, with the grader naming the sign slip, a typed question answered from the same page, and the statement as it was read" width="880">
+  </picture>
+  <br><sub>A check mid-problem. The feedback names the rule the step broke, and applying it stays your job.</sub>
+</p>
+
 ## Problem Solving
 
 One page is one problem, and the loop around it is deliberately granular. The statement is read and solved once up front, so every later request has something to grade against. A check judges only settled work, and a hint escalates one rung at a time. What the page taught you leaves as a review card and as a mark on a skill map. The grader ships as a school mathematics teacher, and a new preset clones it, so the same loop starts from that tuned baseline when you point it at something else.
@@ -64,13 +72,27 @@ The ask box feeds the same deck: a typed question is itself a signal about what 
 
 Every page tags the skills behind it against a fixed map of 125 skills, from sign handling up through the chain rule and proof by induction. The Progress tab turns that into a weak-spot list with a drill button per skill: a generated practice problem pitched so you get it right about four times in five, plus a next-up suggestion for the session. There is deliberately no rating and no rank; the map steers practice and nothing else.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/progress-dark.png">
+    <img src="docs/progress-light.png" alt="the Progress tab: a weak-spot list of skills with how often each was missed, a drill button per row, and a generated practice problem underneath" width="880">
+  </picture>
+</p>
+
 ## Study
 
 The half with no grader in it. Material comes in, gets filed, and gets questioned in a chat that can only answer from what you attached to it.
 
-### A notebook, and a chat that has read it
+### A notebook, and the board you write it on
 
 School notes of any subject live in Study, on its Notebook tab. Write them in ink in a full-pane editor, type them, or paste them: Cmd+V with a screenshot or photo on the clipboard files it as a note on the spot. Every image note is transcribed in the background by a small vision model into searchable text with $-LaTeX math, and every ink note can be reopened and continued later, on the writing rather than a screen above it. Notes organize into nested folders with tags, pins, and full-text search; each carries a context field only you write, for the assignment or source it belongs to. The panes and the note window resize by drag and keep their size.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/notebook-dark.png">
+    <img src="docs/notebook-light.png" alt="the Notebook tab: a folder tree down the left, the folder's own context above the grid, and note cards showing the handwriting each one holds, one of them still marked as a draft" width="880">
+  </picture>
+</p>
 
 Titles stay yours. Nothing names a note behind your back, and the button that does it costs nothing in the ordinary case: the transcriber already read the page, so its suggestion is kept from that call and handed over when you press for it.
 
@@ -78,13 +100,29 @@ The writing surface itself is a board, not a sheet. A note grows in whatever dir
 
 Writing is saved as you write it. A moment after the pen stops, the board is on disk: the first line makes the note, everything after it updates the same note, and leaving the tab or the browser takes nothing with it. Nothing on that path costs anything, because a half-written page is not worth reading; Save is what finishes a note and sends the handwriting to be transcribed. Until then the note sits in the notebook marked as a draft. A screenshot pasted onto the board is an object on it rather than a mode you enter: tap it with the pen to move, resize or turn it, tap off it to carry on writing, and ink still goes over the top. Lock it and it becomes part of the page: the pen goes straight through, so a picture you are taking notes on top of cannot be nudged out from under them by a stroke that clipped its edge.
 
+Documents you already have go into the same folders. Drop a Word file, a PDF, or a text file onto a folder and it is filed as a note beside the handwritten ones, or pick it with + File; dragging a note onto a folder moves it there too. A Word document is read in place, headings, lists, tables and pictures included, without a converter library and without a trip through Word: the app unzips the file and renders it. A PDF opens in the browser's own viewer, and whatever text a document carries is kept with it, so it turns up in search and attaches to a chat like any other note.
+
 ### Asking mid-page
 
 A question window floats over the board, and it answers the question. No hints, no next steps, nothing about the rest of the page: it is there for the word, the sign, the rule you are not sure applies, and the work stays yours. It reads the page as text rather than as a picture, and the text it uses is the one that already exists, so a run of questions about a page you are not currently writing on costs a small text call each and nothing else. Write a paragraph and the next question reads the page once; every question after that reuses that reading. Nothing it reads is written back over the note's own transcript.
 
-Documents you already have go into the same folders. Drop a Word file, a PDF, or a text file onto a folder and it is filed as a note beside the handwritten ones, or pick it with + File; dragging a note onto a folder moves it there too. A Word document is read in place, headings, lists, tables and pictures included, without a converter library and without a trip through Word: the app unzips the file and renders it. A PDF opens in the browser's own viewer, and whatever text a document carries is kept with it, so it turns up in search and attaches to a chat like any other note.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/board-dark.png">
+    <img src="docs/board-light.png" alt="the ink editor: a proof written across the board, with the question window floating beside it answering what the induction hypothesis lets you assume" width="880">
+  </picture>
+</p>
 
-The Chat tab beside it is a persistent study chat over that notebook. Conversations survive restarts, and each carries its own attachments: single notes or whole folder subtrees, resolved to transcripts at send time, so answers are grounded in what you actually wrote and name the note they draw on. Any attached note opens in a window that floats over the thread, movable and resizable, so the page an answer is about is readable while you ask the next question. Replies render as full markdown with live KaTeX: headings, lists, tables, code, and formulas inside all of them. Each conversation also picks the model it answers on, from the shipped list or any id you type, so the chat working through a proof and the one drilling vocabulary need not share a tier; a chat that picks nothing follows the Presets default, and every answer carries the name of the model that wrote it. The grader on the pad and the study chat stay separate personas.
+### The chat that has read it
+
+The Chat tab beside the notebook is a persistent study chat over it. Conversations survive restarts, and each carries its own attachments: single notes or whole folder subtrees, resolved to transcripts at send time, so answers are grounded in what you actually wrote and name the note they draw on. Any attached note opens in a window that floats over the thread, movable and resizable, so the page an answer is about is readable while you ask the next question. Replies render as full markdown with live KaTeX: headings, lists, tables, code, and formulas inside all of them. Each conversation also picks the model it answers on, from the shipped list or any id you type, so the chat working through a proof and the one drilling vocabulary need not share a tier; a chat that picks nothing follows the Presets default, and every answer carries the name of the model that wrote it. The grader on the pad and the study chat stay separate personas.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/chat-dark.png">
+    <img src="docs/chat-light.png" alt="the Chat tab: an answer rendered with KaTeX and a table, the notes and folder attached to the conversation in the bar above, the model it runs on, and the attached note open in a window floating over the thread" width="880">
+  </picture>
+</p>
 
 ## Underneath both
 
@@ -99,6 +137,13 @@ One disk is not a backup, so `npm run backup` mirrors that folder to a server of
 ### Cost you can see
 
 The strong model carries solve, hints, and the finish; the cheap one carries the repeated middle checks. The Usage tab prices every request from per-model rates pinned in `src/models.ts` and shows where the money went, per purpose and per problem.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/usage-dark.png">
+    <img src="docs/usage-light.png" alt="the Usage tab: spend broken down by purpose and then by model, and a per-problem cost chart splitting input from output" width="880">
+  </picture>
+</p>
 
 ## How it works
 
