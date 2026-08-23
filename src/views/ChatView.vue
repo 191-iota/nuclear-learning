@@ -1,22 +1,29 @@
 <script setup lang="ts">
 import ConfirmButton from '@/components/ConfirmButton.vue';
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import FloatWindow from '@/components/FloatWindow.vue';
 import MathText from '@/components/MathText.vue';
 import {
   activeConversation,
   chatStore,
+  conversationModel,
   deleteConversation,
   newConversation,
   renameConversation,
   sendMessage,
   setAttachments,
+  setConversationModel,
 } from '@/stores/chat';
+import { settings } from '@/stores/settings';
+import { MODELS, modelInfo } from '@/models';
 import {
   folderPath,
   folderTree,
+  loadNoteImage,
   notesInFolder,
   notesStore,
   resolveAskNotes,
+  type Note,
 } from '@/stores/notes';
 import { retrievalState } from '@/stores/retrieval';
 
@@ -127,11 +134,146 @@ function onNew(): void {
   sendFailed.value = false;
 }
 
+// ---- which model answers ----
+//
+// Per conversation, because that is the unit the choice belongs to: the chat working
+// through a proof and the chat looking up vocabulary are both open, and they do not
+// want the same tier. A chat that never chooses follows the Presets setting, so the
+// old behaviour is still what happens by default and the setting still moves it.
+//
+// The list is the shipped one plus a way to type an id, matching Presets: a model
+// released after this build has to be usable the day it lands.
+
+const OTHER = '@other'; // a select value no model id can collide with
+
+const typingModel = ref(false);
+const modelDraft = ref('');
+
+/** What the next turn will be sent to, named the way the price table names it. */
+function modelLabel(id: string): string {
+  return MODELS.find((m) => m.id === id)?.label ?? id;
+}
+
+const activeModel = computed(() => conversationModel(conv.value));
+
+const modelTitle = computed(() => {
+  const id = activeModel.value;
+  const known = MODELS.find((m) => m.id === id);
+  const price = known
+    ? `$${known.in} per million in, $${known.out} out`
+    : `not in the price table, so Usage prices it as ${modelInfo(id).label}`;
+  const source = conv.value?.model ? 'this chat' : 'the Presets default';
+  return `Every turn of this chat runs on ${id} (${price}), set by ${source}.`;
+});
+
+function onModelPick(value: string): void {
+  if (value === OTHER) {
+    modelDraft.value = conv.value?.model ?? '';
+    typingModel.value = true;
+    return;
+  }
+  const c = conv.value ?? newConversation();
+  setConversationModel(c.id, value);
+}
+
+function commitModel(): void {
+  if (!typingModel.value) return;
+  typingModel.value = false;
+  const c = conv.value ?? newConversation();
+  setConversationModel(c.id, modelDraft.value);
+}
+
 // Attaching is a valid FIRST action: with no conversation yet, the picker creates
 // one on the spot instead of sitting disabled.
 function openPicker(): void {
   if (!conv.value) newConversation();
-  pickerOpen.value = true;
+  pickerOpen.value = !pickerOpen.value;
+}
+
+/**
+ * Closing the picker is the part that was wrong. It opened as a tall panel over the
+ * thread and the only way out was a Done button at the far right of its header, a
+ * whole window's travel from the row you had just ticked. Now it closes the way every
+ * other transient thing in this app closes: Enter, Esc, or clicking somewhere else.
+ * Ticking rows stays multi-select, so none of those three commits anything; they only
+ * put the panel away.
+ */
+const pickerRef = ref<HTMLElement | null>(null);
+const attachBtnRef = ref<HTMLElement | null>(null);
+
+function closePicker(): void {
+  pickerOpen.value = false;
+}
+
+function onDocDown(e: PointerEvent): void {
+  const t = e.target as Node | null;
+  if (!t) return;
+  // The toggle button owns its own click; closing here first would just reopen it.
+  if (pickerRef.value?.contains(t) || attachBtnRef.value?.contains(t)) return;
+  closePicker();
+}
+
+function onPickerKey(e: KeyboardEvent): void {
+  if (e.key === 'Escape') closePicker();
+}
+
+watch(pickerOpen, (open) => {
+  if (open) {
+    document.addEventListener('pointerdown', onDocDown, true);
+    window.addEventListener('keydown', onPickerKey);
+  } else {
+    document.removeEventListener('pointerdown', onDocDown, true);
+    window.removeEventListener('keydown', onPickerKey);
+    pickerQuery.value = '';
+  }
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocDown, true);
+  window.removeEventListener('keydown', onPickerKey);
+});
+
+// ---- a note, open beside the thread ----
+//
+// Reading a note and asking about it are the same act, and sending the reader to the
+// Notebook tab to do the first half loses the second. So an attached note opens in a
+// window that floats over this one: movable, resizable, and left where it was put.
+
+const openNoteId = ref('');
+const openNoteImage = ref('');
+
+const openNote = computed<Note | null>(
+  () => notesStore.notes.find((n) => n.id === openNoteId.value) ?? null,
+);
+
+const attachedIds = computed(() => {
+  const c = conv.value;
+  if (!c) return [] as string[];
+  const ids = new Set<string>(c.noteIds);
+  for (const fid of c.folderIds) for (const n of notesInFolder(fid, true)) ids.add(n.id);
+  return [...ids];
+});
+
+/** Everything this conversation has attached, as the list the window pages through. */
+const attachedNotes = computed(() =>
+  attachedIds.value
+    .map((id) => notesStore.notes.find((n) => n.id === id))
+    .filter((n): n is Note => Boolean(n)),
+);
+
+/** Whether the picture is showing at full size. Off by default (see the template). */
+const imgBig = ref(false);
+
+async function showNote(id: string): Promise<void> {
+  openNoteId.value = id;
+  openNoteImage.value = '';
+  imgBig.value = false;
+  const n = notesStore.notes.find((x) => x.id === id);
+  if (n?.hasImage) {
+    const img = await loadNoteImage(id);
+    // The window may have moved on to another note while the picture loaded.
+    if (openNoteId.value === id) openNoteImage.value = img;
+  }
 }
 
 // Renaming a chat happens on its own row in the list, not in an OS prompt box.
@@ -272,19 +414,66 @@ function fmtDate(ts: number): string {
           {{ sidebarOpen ? '⟨ Chats' : '⟩ Chats' }}
         </button>
         <button
+          ref="attachBtnRef"
           class="ghost attach-btn"
+          :class="{ on: pickerOpen }"
           title="Attach notes or whole folders; every answer in this chat is grounded in them"
           @click="openPicker"
         >
           + Notes
         </button>
+        <button
+          v-if="attachedNotes.length"
+          class="ghost attach-btn"
+          title="Read a note in a window over this one, while the conversation stays where it is"
+          @click="showNote(openNoteId || attachedNotes[0].id)"
+        >
+          Open note
+        </button>
+        <!-- Which model answers, for this conversation. Typing an id is offered for
+             the same reason Presets offers it: a model released after this build
+             should be usable the day it lands. -->
+        <input
+          v-if="typingModel"
+          v-model="modelDraft"
+          v-focus
+          class="model-in mono"
+          list="nl-chat-models"
+          type="text"
+          spellcheck="false"
+          autocapitalize="off"
+          placeholder="model id"
+          aria-label="Model id for this chat"
+          @keydown.enter.prevent="commitModel"
+          @keydown.esc.prevent="typingModel = false"
+          @blur="commitModel"
+        />
+        <select
+          v-else
+          class="model-sel mono"
+          :value="conv?.model ?? ''"
+          :title="modelTitle"
+          aria-label="Model for this chat"
+          @change="onModelPick(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">Default · {{ modelLabel(settings.api.chatModel) }}</option>
+          <option v-if="conv?.model && !MODELS.some((m) => m.id === conv?.model)" :value="conv.model">
+            {{ conv.model }}
+          </option>
+          <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
+          <option :value="OTHER">Other model id…</option>
+        </select>
         <template v-if="conv">
           <span v-for="fid in conv.folderIds" :key="`f-${fid}`" class="attach-chip">
             {{ folderPath(fid) }}/*
             <button class="chip-x" :aria-label="`Detach folder ${folderPath(fid)}`" @click="toggleFolder(fid)">×</button>
           </span>
           <span v-for="nid in conv.noteIds" :key="`n-${nid}`" class="attach-chip">
-            {{ noteTitle(nid) }}
+            <!-- The chip is the way into the note: reading it is what you wanted the
+                 moment you noticed it was attached. -->
+            <button class="chip-open" :title="`Read ${noteTitle(nid)} beside the chat`" @click="showNote(nid)">
+              {{ noteTitle(nid) }}
+            </button>
             <button class="chip-x" :aria-label="`Detach note ${noteTitle(nid)}`" @click="toggleNote(nid)">×</button>
           </span>
           <span v-if="!conv.folderIds.length && !conv.noteIds.length" class="cctx-hint mono">
@@ -303,17 +492,24 @@ function fmtDate(ts: number): string {
       <!-- Attachment picker: a panel in the chat column, not a modal over the thread.
            Folders take their whole subtree; a note already covered by one is shown as
            such instead of being silently redundant. -->
-      <div v-if="pickerOpen" class="cpicker">
+      <div v-if="pickerOpen" ref="pickerRef" class="cpicker">
         <div class="cpicker-head">
+          <!-- Done sits where the pointer already is, under the + Notes button that
+               opened this. Enter and Esc do the same thing from the keyboard. -->
+          <button class="ghost" title="Put the picker away (Enter or Esc). Your ticks are already saved." @click="closePicker">
+            Done
+          </button>
           <input
             v-model="pickerQuery"
+            v-focus
             class="cpicker-search"
             type="search"
             placeholder="Search notes and folders…"
             aria-label="Search notes and folders"
+            @keydown.enter.prevent="closePicker"
+            @keydown.esc.prevent="closePicker"
           />
           <span class="cpicker-sum mono">{{ pickerSummary }}</span>
-          <button class="ghost" @click="pickerOpen = false">Done</button>
         </div>
         <div class="cpicker-rows">
           <label
@@ -361,11 +557,15 @@ function fmtDate(ts: number): string {
               <MathText v-if="m.role === 'assistant'" :text="m.text" rich />
               <template v-else>{{ m.text }}</template>
             </div>
-            <div class="msg-time mono">{{ fmtTime(m.ts) }}</div>
+            <!-- An answer says which model wrote it, so a thread that changed model
+                 halfway is readable as one afterwards. -->
+            <div class="msg-time mono">
+              {{ fmtTime(m.ts) }}<template v-if="m.model"> · {{ modelLabel(m.model) }}</template>
+            </div>
           </div>
         </template>
         <div v-if="busy" class="msg assistant">
-          <div class="msg-body thinking">Thinking…</div>
+          <div class="msg-body thinking">{{ modelLabel(activeModel) }} is thinking…</div>
         </div>
         <div v-if="sendFailed" class="sendfail mono">No answer came back. The question is back in the box — Enter retries.</div>
       </div>
@@ -383,6 +583,55 @@ function fmtDate(ts: number): string {
       </form>
     </div>
 
+    <!-- Suggestions for the model box, the same shipped list Presets offers. -->
+    <datalist id="nl-chat-models">
+      <option v-for="m in MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
+    </datalist>
+
+    <!-- A note, open over the thread: drag it aside, size it to the page, keep asking. -->
+    <FloatWindow
+      v-if="openNote"
+      pane-key="chatNote"
+      :title="openNote.title || 'Untitled'"
+      :w="520"
+      :h="600"
+      :min-w="320"
+      :min-h="240"
+      @close="openNoteId = ''"
+    >
+      <template #actions>
+        <select
+          v-if="attachedNotes.length > 1"
+          class="nw-pick"
+          :value="openNoteId"
+          title="Another of this chat's notes"
+          @change="showNote(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="n in attachedNotes" :key="n.id" :value="n.id">
+            {{ n.title || 'Untitled' }}
+          </option>
+        </select>
+      </template>
+      <div class="nw-body">
+        <p class="nw-path mono">{{ folderPath(openNote.folderId) }}</p>
+        <!-- Capped, because a handwriting picture at full window width fills the whole
+             window and pushes the text of the note below the fold. Click for the whole
+             page when the handwriting is what you came to read. -->
+        <button
+          v-if="openNoteImage"
+          class="nw-imgbtn"
+          :title="imgBig ? 'Smaller' : 'Show the whole page'"
+          @click="imgBig = !imgBig"
+        >
+          <img :src="openNoteImage" class="nw-img" :class="{ big: imgBig }" alt="The note as it was written" />
+        </button>
+        <p v-if="openNote.context" class="nw-ctx">{{ openNote.context }}</p>
+        <MathText v-if="openNote.text" :text="openNote.text" rich />
+        <p v-else-if="!openNoteImage" class="nw-empty mono">
+          {{ openNote.hasImage ? 'Still being transcribed.' : 'Nothing written in this note yet.' }}
+        </p>
+      </div>
+    </FloatWindow>
   </section>
 </template>
 
@@ -529,6 +778,16 @@ function fmtDate(ts: number): string {
   padding: 0.2rem 0.55rem;
 }
 
+/* The model picker sits with the other things that describe the conversation rather
+   than with the composer: it belongs to the whole thread, not to the next message. */
+.model-sel,
+.model-in {
+  flex: none;
+  max-width: 12rem;
+  font-size: 0.7rem;
+  padding: 0.2rem 0.35rem;
+}
+
 .attach-chip {
   display: inline-flex;
   align-items: center;
@@ -585,7 +844,12 @@ function fmtDate(ts: number): string {
   font-size: 0.76rem;
 }
 
+/* flex: none for the same reason as the question window's messages: a turn that is
+   taller than the thread must make the THREAD scroll, and a shrinkable item wrapping a
+   scroll container collapses into a little scrolling box of its own instead. */
 .msg {
+  flex: none;
+  min-width: 0;
   max-width: min(64rem, 98%);
   display: flex;
   flex-direction: column;
@@ -602,25 +866,26 @@ function fmtDate(ts: number): string {
 }
 
 .msg-body {
+  min-width: 0;
   font-size: 0.92rem;
   line-height: 1.6;
   color: var(--ink);
   border-radius: var(--radius);
   padding: 0.55rem 0.8rem;
-  overflow-x: auto;
 }
 
 .msg.user .msg-body {
   background: var(--panel);
   border: 1px solid var(--border);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
+/* No pre-wrap on an answer: it is rendered markup, and MathText sets what it needs. */
 .msg.assistant .msg-body {
   background: transparent;
   border: 1px solid transparent;
   padding-left: 0;
-  white-space: pre-wrap;
 }
 
 .msg-body.thinking {
@@ -706,6 +971,8 @@ function fmtDate(ts: number): string {
   color: var(--ink);
 }
 
+/* A third of the window rather than half of it: the picker is a thing you pass
+   through, and it used to bury the conversation it belongs to. */
 .cpicker {
   border: 1px solid var(--gold);
   border-radius: var(--radius);
@@ -714,15 +981,20 @@ function fmtDate(ts: number): string {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  max-height: 46vh;
+  max-height: 32vh;
 }
 
 .cpicker-head {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0.5rem 0.6rem;
+  padding: 0.4rem 0.5rem;
   border-bottom: 1px solid var(--border);
+}
+
+.attach-btn.on {
+  border-color: var(--gold);
+  color: var(--gold);
 }
 
 .cpicker-search {
@@ -806,5 +1078,91 @@ function fmtDate(ts: number): string {
   display: flex;
   align-items: center;
   margin-top: 0.8rem;
+}
+
+/* The note window over the thread */
+.chip-open {
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-open:hover {
+  color: var(--gold);
+}
+
+.nw-pick {
+  max-width: 11rem;
+  font-size: 0.72rem;
+  padding: 0.15rem 0.3rem;
+}
+
+.nw-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.7rem 0.85rem 1rem;
+  font-size: 0.88rem;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.nw-path {
+  margin: 0 0 0.5rem;
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+.nw-imgbtn {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
+.nw-imgbtn:hover .nw-img {
+  border-color: var(--gold);
+}
+
+.nw-img {
+  display: block;
+  width: 100%;
+  max-height: 11rem;
+  object-fit: contain;
+  object-position: left top;
+  margin-bottom: 0.6rem;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.nw-img.big {
+  max-height: none;
+}
+
+/* The student's own framing, marked as theirs the way it is everywhere else. */
+.nw-ctx {
+  margin: 0 0 0.7rem;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  color: var(--ink);
+  border-left: 2px solid var(--gold);
+  background: var(--bg);
+  border-radius: var(--radius);
+}
+
+.nw-empty {
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 </style>

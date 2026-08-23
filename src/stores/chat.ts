@@ -1,5 +1,6 @@
 import { reactive } from 'vue';
 import { chatAsk } from '@/ask';
+import { settings } from '@/stores/settings';
 import { resolveAskNotes } from '@/stores/notes';
 import { ensureIndexed, retrieve } from '@/stores/retrieval';
 import { colDelete, colList, colPut, dbState } from '@/db';
@@ -18,6 +19,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
   ts: number;
+  /** Which model wrote this one. Absent on student turns and on older transcripts. */
+  model?: string;
 }
 
 export interface ChatConversation {
@@ -28,6 +31,15 @@ export interface ChatConversation {
   noteIds: string[];
   folderIds: string[];
   messages: ChatMessage[];
+  /**
+   * The model this conversation runs on, when it is not the one Presets sets. Chosen
+   * per conversation rather than globally because that is the unit the choice belongs
+   * to: a chat that is chewing through a proof wants the expensive tier, and the one
+   * that looks up vocabulary does not, and both are open at once. Empty or absent
+   * means the Presets default, so a chat started before this existed keeps following
+   * that setting, and changing the setting still moves every chat that never chose.
+   */
+  model?: string;
 }
 
 const COL = 'chats';
@@ -110,6 +122,20 @@ export function renameConversation(id: string, title: string): void {
   void persist(c);
 }
 
+/** The model a conversation runs on. '' hands it back to the Presets default. */
+export function setConversationModel(id: string, model: string): void {
+  const c = chatStore.conversations.find((x) => x.id === id);
+  if (!c) return;
+  const next = model.trim();
+  c.model = next || undefined;
+  void persist(c);
+}
+
+/** What the next turn of this conversation will actually be sent to. */
+export function conversationModel(c: ChatConversation | undefined): string {
+  return c?.model?.trim() || settings.api.chatModel;
+}
+
 export function setAttachments(id: string, noteIds: string[], folderIds: string[]): void {
   const c = chatStore.conversations.find((x) => x.id === id);
   if (!c) return;
@@ -151,10 +177,13 @@ export async function sendMessage(convId: string, question: string): Promise<boo
   // verbatim so a freshly attached folder is never silently answered without.
   const { passages, unindexed } = await retrieve(q, c.noteIds, c.folderIds);
   const notes = unindexed.length ? resolveAskNotes(unindexed.map((n) => n.id), []).notes : [];
-  const reply = await chatAsk({ question: q, notes, passages, folders, history });
+  // Resolved here rather than inside the request, so the reply can say which model
+  // wrote it even after the conversation is switched to another one.
+  const model = conversationModel(c);
+  const reply = await chatAsk({ question: q, notes, passages, folders, history, model });
   void ensureIndexed(c.noteIds, c.folderIds); // catch up for the next turn
   if (!reply) return false;
-  c.messages.push({ role: 'assistant', text: reply, ts: Date.now() });
+  c.messages.push({ role: 'assistant', text: reply, ts: Date.now(), model });
   if (c.messages.length > MAX_MESSAGES) c.messages.splice(0, c.messages.length - MAX_MESSAGES);
   touch(c);
   void persist(c);
@@ -173,6 +202,9 @@ if (typeof window !== 'undefined') {
       messages: c.messages.length,
       notes: c.noteIds.length,
       folders: c.folderIds.length,
+      // What it runs on, and whether that is its own choice or the Presets default.
+      model: conversationModel(c),
+      ownModel: Boolean(c.model),
     })),
   });
 }
