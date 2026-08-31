@@ -16,6 +16,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1a1915?style=flat-square" alt="MIT license"></a>
   <a href="https://vuejs.org"><img src="https://img.shields.io/badge/Vue-3-1a1915?style=flat-square" alt="Vue 3"></a>
   <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/TypeScript-strict-1a1915?style=flat-square" alt="TypeScript strict"></a>
+  <a href="https://ollama.com"><img src="https://img.shields.io/badge/models-local%20via%20Ollama-1a1915?style=flat-square" alt="models run locally through Ollama"></a>
 </p>
 
 Two halves share one window, and the switch at the top says which one you are in. Study is the notebook: school material of any subject, written in ink, typed, pasted from the clipboard, or dropped in as Word and PDF files, with a persistent chat grounded in it. Problem Solving is the pad and the machinery around it, a granular loop that grades your settled work against a solution it worked out first and names the rule a wrong step broke. It ships tuned for school mathematics, down to a map of 125 skills that steers what you practice next.
@@ -96,7 +97,7 @@ School notes of any subject live in Study, on its Notebook tab. Write them in in
 
 Titles stay yours. Nothing names a note behind your back, and the button that does it costs nothing in the ordinary case: the transcriber already read the page, so its suggestion is kept from that call and handed over when you press for it.
 
-The writing surface itself is a board, not a sheet. A note grows in whatever direction you keep writing, with no edge to run into: scroll or drag to move around, zoom out to a twentieth to see a whole session at once, and press Fit to frame everything you have written. Only the ink is exported, cropped to what you drew, so empty board costs nothing. A page-sized note transcribes as the single clean image it always did; once a board grows wider than one picture can hold and still keep the handwriting readable, it is sent as its separate regions in reading order instead, each at full pen weight. The solving pad stays a page, because there one page is one problem.
+The writing surface itself is a board, not a sheet. A note grows in whatever direction you keep writing, with no edge to run into: scroll or drag to move around, zoom out to a twentieth to see a whole session at once, and press Fit to frame everything you have written. Only the ink is exported, cropped to what you drew, so empty board costs nothing. A page-sized note transcribes as the single clean image it always did; once a board grows past what one picture can hold and still keep the handwriting readable, it is cut into regions in reading order, each at full pen weight, and read one request per region. The regions do not overlap and every cut is pulled onto empty board, so no line is read twice and none is sliced in half; the transcript is those readings joined in order. A board of twenty pages takes a couple of minutes and says how far it has got while it works. The solving pad stays a page, because there one page is one problem.
 
 Writing is saved as you write it. A moment after the pen stops, the board is on disk: the first line makes the note, everything after it updates the same note, and leaving the tab or the browser takes nothing with it. Nothing on that path costs anything, because a half-written page is not worth reading; Save is what finishes a note and sends the handwriting to be transcribed. Until then the note sits in the notebook marked as a draft. A screenshot pasted onto the board is an object on it rather than a mode you enter: tap it with the pen to move, resize or turn it, tap off it to carry on writing, and ink still goes over the top. Lock it and it becomes part of the page: the pen goes straight through, so a picture you are taking notes on top of cannot be nudged out from under them by a stroke that clipped its edge.
 
@@ -134,28 +135,32 @@ A notebook is only useful where you need it, so `npm run dump` pours it back out
 
 One disk is not a backup, so `npm run backup` mirrors that folder to a server of your own over SSH. Every push writes a full snapshot whose unchanged files are hardlinks into the previous one, so a month of history costs about one copy plus what changed. Set `NL_BACKUP_HOST` and `NL_BACKUP_PATH` in `.env` and check the connection with `npm run backup:check`; add `NL_BACKUP_EVERY_MIN` and the dev server pushes on its own while you write. `npm run backup:pull` brings the newest snapshot back into a fresh folder, never over your live one unless you ask it to.
 
-### Cost you can see
+One disk is also not two machines. `./data` is a clone of a private repository of its own, so the notes, the handwriting and the archive follow you: `npm install` on a machine that has never seen them clones the database, installs a small agent that pulls and pushes every few minutes, and runs one round straight away. The dev server does the same when it boots, which is the moment that matters, because it means the work from the machine you left is already there before you start typing. `npm run sync:status` says what is local, what is remote and whether the agent is up. When two machines edited the same note between two syncs, the newer edit wins the file and both versions are written to `./data-conflicts/` first, so the decision is never a loss. Git is one shared timeline and a delete travels along it, which is why the snapshots above stay: sync makes you portable, backup is what you restore from.
 
-The strong model carries solve, hints, and the finish; the cheap one carries the repeated middle checks. The Usage tab prices every request from per-model rates pinned in `src/models.ts` and shows where the money went, per purpose and per problem.
+### What a page actually spends
+
+Every request is answered by Ollama on this machine, so a page costs nothing and the only thing it spends is time. The Usage tab counts what that time is made of: tokens read and written, broken down by purpose and then by model, with a bar per problem splitting what the model was given from what it wrote back. It also names the model each request ran on, so moving a chat or the pad from E4B to 12B shows up as a heavier bar instead of as a bigger bill.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/usage-dark.png">
-    <img src="docs/usage-light.png" alt="the Usage tab: spend broken down by purpose and then by model, and a per-problem cost chart splitting input from output" width="880">
+    <img src="docs/usage-light.png" alt="the Usage tab: tokens broken down by purpose and then by model, and a per-problem chart splitting what the model read from what it wrote" width="880">
   </picture>
 </p>
 
 ## How it works
 
-Solving runs as a pipeline of five requests, each with its own job and its own model. The pen streams (x, y, pressure) points onto a canvas; the tablet draws into the same page space through pointer events. On every button press the page is cropped to just the ink and sent to the OpenAI API as a vision message; the model reads the handwriting itself.
+Solving runs as a pipeline of five requests, each with its own job and its own model. The pen streams (x, y, pressure) points onto a canvas; the tablet draws into the same page space through pointer events. On every button press the page is cropped to just the ink and sent as a vision message to Ollama on this machine; the model reads the handwriting itself, and no page, question or transcript leaves the laptop.
 
 | Button | What happens | Model |
 |---|---|---|
-| Problem written | Reads the statement and solves it once, every sub-question of it; the answers become an internal checklist | GPT-5.6 Terra |
-| Check | Grades the settled work against the checklist | GPT-5.4 mini |
-| Hint | Names the next constraint your route must satisfy | GPT-5.6 Terra |
-| Ask (typed) | Answers a free question about the page, grounded in your work and the checklist | GPT-5.6 Terra |
-| Finish | Judges the declared-done page against the full checklist | GPT-5.6 Terra |
+| Problem written | Reads the statement and solves it once, every sub-question of it; the answers become an internal checklist | Gemma 4 E4B, thinking first |
+| Check | Grades the settled work against the checklist | Gemma 4 E4B, answering straight |
+| Hint | Names the next constraint your route must satisfy | Gemma 4 E4B, thinking first |
+| Ask (typed) | Answers a free question about the page, grounded in your work and the checklist | Gemma 4 E4B, thinking first |
+| Finish | Judges the declared-done page against the full checklist | Gemma 4 E4B, thinking first |
+
+One model answers all five, and what separates them is whether it thinks before it writes. Check is the press that repeats, sometimes every other line, so it answers straight and comes back in seconds; the four that decide something are worth the wait. Reading a note in the Study half asks for no thinking either, and that is measured rather than thrifty: the same page came back in 7 seconds against 35, and the fast reading was the accurate one. Every one of these is a model id and an effort in Presets, so a page that deserves 12B can have it.
 
 Forgetting the first button costs nothing: every other request, the ask box included, runs the capture pass itself when no checklist exists yet. The capture echoes the statement into the side panel, editable: fix a misread given by hand and it re-solves against your text, which from then on outranks the ink. Sub-questions a check has confirmed stay confirmed; later checks are barred from re-flagging approved work unless you visibly rework it.
 
@@ -167,11 +172,16 @@ The grader is one system prompt plus a few settings, edited live in the Presets 
 
 ## Run it
 
-You need Node and a Chromium-based browser.
+You need Node, a Chromium-based browser, and Ollama. No key, no account, and no request that leaves the machine.
 
 ```bash
+brew install ollama                       # or ollama.com/download
+OLLAMA_CONTEXT_LENGTH=32768 ollama serve &
+
+ollama pull gemma4:e4b                    # reads the pages, answers the chat
+ollama pull embeddinggemma                # the notebook's retrieval index
+
 npm install
-cp .env.example .env   # then add your OpenAI API key
 npm run dev
 ```
 
@@ -180,8 +190,8 @@ Open the printed URL, connect the pen, and write. Connecting is always the butto
 > [!NOTE]
 > Web Bluetooth is not in Safari or Firefox, and Brave ships with it off (enable it at `brave://flags/#brave-web-bluetooth-api`). Pairing works over `localhost` or `https`, and on macOS the browser needs Bluetooth permission.
 
-> [!WARNING]
-> The key is read from `VITE_OPENAI_API_KEY` and used from the browser. Keep it local and use one you can rotate.
+> [!IMPORTANT]
+> That context length is not optional. Ollama loads a model with 4096 tokens unless it is told otherwise, and one page image plus the pad's system prompt is already more than that, so every request would come back 400. Set `OLLAMA_CONTEXT_LENGTH` wherever the server is started for good: a launchd agent on macOS, the systemd unit on Linux.
 
 ## Hardware
 
