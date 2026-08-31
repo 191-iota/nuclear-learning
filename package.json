@@ -12,7 +12,12 @@
     "backup": "bash scripts/backup.sh push",
     "backup:check": "bash scripts/backup.sh check",
     "backup:pull": "bash scripts/backup.sh pull",
-    "backup:list": "bash scripts/backup.sh list"
+    "backup:list": "bash scripts/backup.sh list",
+    "sync": "bash scripts/sync.sh sync",
+    "sync:status": "bash scripts/sync.sh status",
+    "sync:install": "bash scripts/sync.sh install",
+    "sync:init": "bash scripts/sync.sh init",
+    "postinstall": "bash scripts/sync.sh autostart || true"
   },
   "dependencies": {
     "@types/katex": "^0.16.8",

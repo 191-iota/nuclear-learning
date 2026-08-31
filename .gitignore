@@ -14,6 +14,7 @@ dist
 # folders. Personal data, and the only directory here that is irreplaceable.
 data/
 data-restored-*/
+data-conflicts/
 backups/
 
 # Editor and OS litter

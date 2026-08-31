@@ -3,6 +3,7 @@ import vue from '@vitejs/plugin-vue';
 import { fileURLToPath, URL } from 'node:url';
 import { localDb } from './server/localdb';
 import { backupSync } from './server/backup';
+import { syncData } from './server/sync';
 import { jsxCompiler } from './server/jsx';
 
 // web_pen_sdk ships a webpack CommonJS bundle that transitively includes
@@ -14,11 +15,14 @@ export default defineConfig(({ mode }) => ({
   // The file database rides the dev server: everything durable lands under ./data,
   // outside the browser profile, so clearing browser data destroys nothing. The
   // backup plugin pushes that directory to the box named in .env (NL_BACKUP_*),
-  // and stays asleep when nothing is configured.
+  // and stays asleep when nothing is configured. The sync plugin is the other half:
+  // it keeps ./data level with the private data repository, once at boot so a second
+  // machine is current before you type, and every NL_SYNC_EVERY_MIN minutes after.
   plugins: [
     vue(),
     localDb(fileURLToPath(new URL('./data', import.meta.url))),
     backupSync(fileURLToPath(new URL('.', import.meta.url)), loadEnv(mode, process.cwd(), 'NL_')),
+    syncData(fileURLToPath(new URL('.', import.meta.url)), loadEnv(mode, process.cwd(), 'NL_')),
     // Widgets on the board hold JSX, and the server compiles it with the transformer
     // vite's own bundler already carries (server/jsx.ts).
     jsxCompiler(),
