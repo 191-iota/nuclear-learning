@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import BoardWidget from '@/components/BoardWidget.vue';
 import ConfirmButton from '@/components/ConfirmButton.vue';
 import FloatWindow from '@/components/FloatWindow.vue';
 import MathText from '@/components/MathText.vue';
-import { useTablet, type TabletImage, type TabletStroke } from '@/composables/useTablet';
+import {
+  useTablet,
+  type TabletImage,
+  type TabletStroke,
+  type TabletWidget,
+} from '@/composables/useTablet';
+import { WIDGET_SEED } from '@/widgetHost';
 import { holdDue } from '@/composables/holdRepeat';
 import { makeThumb } from '@/stores/archive';
 import { inkedBackdrop } from '@/stores/inkColor';
@@ -31,6 +38,7 @@ import {
   loadNoteBg,
   loadNoteImage,
   loadNoteImages,
+  loadNoteWidgets,
   loadNoteInk,
   noteFileUrl,
   noteWordUrl,
@@ -473,6 +481,61 @@ const inkWrapRef = ref<HTMLDivElement | null>(null);
 // board:true — the writing surface is an unbounded whiteboard, not a sheet: a note
 // grows in every direction, zooms out to be seen whole, and pans like a Miro board.
 const ink = useTablet(inkCanvasRef, { scratch: false, board: true, probeName: '__nlInk' });
+
+// ---- widgets on the board ----
+//
+// A widget is an object on the surface like a pasted picture, except that it is the
+// one the engine does not paint: it has fields you type into, so it lives as real
+// elements above the canvas. The engine still owns WHERE it sits (so Fit frames it,
+// the export reaches around it and one save writes it with everything else), and this
+// layer owns what it looks like and what it does.
+const widgets = ref<TabletWidget[]>([]);
+const boardXform = ref<{ k: number; ox: number; oy: number } | null>(null);
+const codingWidget = ref(0); // id of the widget whose source window is open, 0 = none
+const codeDraft = ref('');
+
+// Two different questions, so two watchers. A pan or a zoom moves every widget and
+// changes nothing about them, and it happens once per frame; a change to the widgets
+// themselves is rarer and has to be read back out of the engine.
+watch(
+  () => ink.state.viewRev,
+  () => {
+    boardXform.value = ink.clientTransform();
+  },
+);
+watch(
+  () => ink.state.rev,
+  () => {
+    widgets.value = ink.getWidgets();
+  },
+);
+
+function addWidget(): void {
+  ink.addWidget(WIDGET_SEED);
+  boardXform.value = ink.clientTransform();
+}
+
+function onWidgetUpdate(id: number, patch: Partial<TabletWidget>): void {
+  ink.updateWidget(id, patch);
+}
+
+function removeWidget(id: number): void {
+  ink.removeWidget(id);
+  if (codingWidget.value === id) codingWidget.value = 0;
+}
+
+function openWidgetCode(id: number): void {
+  const wd = widgets.value.find((w) => w.id === id);
+  if (!wd) return;
+  codingWidget.value = id;
+  codeDraft.value = wd.src;
+}
+
+// The source is written through as it is typed; the widget itself waits for the
+// typing to stop before it rebuilds, so a half-finished line is never compiled.
+watch(codeDraft, (src) => {
+  if (codingWidget.value) ink.updateWidget(codingWidget.value, { src });
+});
 const inkFolder = ref<string>(INBOX_ID);
 const inkSaving = ref(false);
 // Set while an EXISTING note's ink is loaded in the editor: Save writes back to it
@@ -524,6 +587,10 @@ async function continueWriting(n: Note): Promise<void> {
   if (n.hasImgs) {
     const pics = (await loadNoteImages(n.id)) as TabletImage[] | null;
     if (pics?.length) ink.setImages(pics);
+  }
+  if (n.hasWidgets) {
+    const wds = (await loadNoteWidgets(n.id)) as TabletWidget[] | null;
+    if (wds?.length) ink.setWidgets(wds);
   }
   // Awaited, because the backdrop is a layer that decides how big the board is, and
   // the fit at the end of this has to be able to see it.
@@ -729,9 +796,10 @@ async function writeInk(full: boolean): Promise<void> {
   if (rev === inkSavedRev.value) return;
   // An empty board is not a note. (An existing one still saves: erasing a page is a
   // change like any other.)
-  if (!note && !ink.state.hasInk && !ink.state.hasImages) return;
+  if (!note && !ink.state.hasInk && !ink.state.hasImages && !ink.state.hasWidgets) return;
   const strokes = ink.getStrokes();
   const images = ink.getImages();
+  const boardWidgets = ink.getWidgets();
   const now = Date.now();
   const shoot = full || !note || now - inkShotAt > INK_SHOT_MS;
   const image = shoot ? ink.exportImage('all') : '';
@@ -744,11 +812,15 @@ async function writeInk(full: boolean): Promise<void> {
       thumb,
       strokes,
       images,
+      widgets: boardWidgets,
       bg: legacyBg.value || undefined,
     });
   } else {
     if (!image) return; // the first save is what gives the note its picture
-    const n = await saveNoteFromPad({ image, thumb, strokes, images, draft: true }, inkFolder.value);
+    const n = await saveNoteFromPad(
+      { image, thumb, strokes, images, widgets: boardWidgets, draft: true },
+      inkFolder.value,
+    );
     // From here the draft IS the note: later autosaves and the Save button both write
     // to it instead of making a second one.
     editingNote.value = n;
@@ -816,6 +888,7 @@ async function saveInk(): Promise<void> {
         thumb,
         strokes: ink.getStrokes(),
         images: ink.getImages(),
+        widgets: ink.getWidgets(),
         bg: legacyBg.value || undefined,
       });
       if (editing.folderId !== inkFolder.value) updateNote(editing.id, { folderId: inkFolder.value });
@@ -824,7 +897,13 @@ async function saveInk(): Promise<void> {
       legacyBg.value = '';
     } else {
       const n = await saveNoteFromPad(
-        { image: img, thumb, strokes: ink.getStrokes(), images: ink.getImages() },
+        {
+          image: img,
+          thumb,
+          strokes: ink.getStrokes(),
+          images: ink.getImages(),
+          widgets: ink.getWidgets(),
+        },
         inkFolder.value,
       );
       selected.value = n.folderId;
@@ -1523,7 +1602,7 @@ function fmtClock(ts: number): string {
           Ask
         </button>
         <button
-          :disabled="inkSaving || (!ink.state.hasInk && !ink.state.hasImages)"
+          :disabled="inkSaving || (!ink.state.hasInk && !ink.state.hasImages && !ink.state.hasWidgets)"
           title="Finish the note and read the handwriting back into text. The writing itself is already saved."
           @click="saveInk"
         >
@@ -1541,6 +1620,22 @@ function fmtClock(ts: number): string {
           }"
           aria-label="Note writing area"
         />
+        <!-- Widgets sit above the ink and are placed by the same transform the canvas
+             draws with. The layer lets everything through; only the widgets in it
+             catch the pointer, so the board around them is still writing surface. -->
+        <div v-if="boardXform" class="widgetlayer">
+          <BoardWidget
+            v-for="w in widgets"
+            :key="w.id"
+            :widget="w"
+            :k="boardXform.k"
+            :ox="boardXform.ox"
+            :oy="boardXform.oy"
+            @update="onWidgetUpdate(w.id, $event)"
+            @remove="removeWidget(w.id)"
+            @edit="openWidgetCode(w.id)"
+          />
+        </div>
         <div class="tooldock" role="toolbar" aria-label="Ink tools">
           <button :disabled="!ink.state.canUndo" title="Undo stroke (Z; hold to remove several)" @click="ink.undo()">Undo</button>
           <button :disabled="!ink.state.canRedo" title="Redo (Y)" @click="ink.redo()">Redo</button>
@@ -1580,6 +1675,12 @@ function fmtClock(ts: number): string {
           >
             Remove picture
           </button>
+          <button
+            title="Put a widget on the board: paste a JSX component and use it here, beside what you are writing about it. Drag its border to move it."
+            @click="addWidget()"
+          >
+            + Widget
+          </button>
           <span class="zoomlvl">{{ ink.state.zoomPct }}%</span>
           <button title="Zoom out (-): the board has no fixed size, so this keeps going" @click="ink.zoomBy(0.8)">−</button>
           <button title="Zoom in (+); ctrl+scroll zooms at the cursor" @click="ink.zoomBy(1.25)">+</button>
@@ -1593,6 +1694,27 @@ function fmtClock(ts: number): string {
         </div>
       </div>
     </div>
+
+    <!-- A widget's source. It floats like the question window and for the same reason:
+         the widget is on the board behind it, rebuilding as the code is typed, and
+         watching that happen is the whole point of editing it here. -->
+    <FloatWindow
+      v-if="inkOpen && codingWidget"
+      pane-key="notesWidgetCode"
+      title="Widget code"
+      :w="470"
+      :h="440"
+      :min-w="320"
+      :min-h="220"
+      @close="codingWidget = 0"
+    >
+      <textarea
+        v-model="codeDraft"
+        class="wcode mono"
+        spellcheck="false"
+        aria-label="Widget source"
+      />
+    </FloatWindow>
 
     <!-- The question window. It floats over the board rather than taking its place,
          so the page you are asking about is still in front of you while you ask. -->
@@ -2283,6 +2405,30 @@ function fmtClock(ts: number): string {
   position: relative;
   flex: 1;
   min-height: 0;
+}
+
+/* The widget layer covers the canvas exactly and is otherwise not there: nothing in
+   it takes the pointer except the widgets themselves. */
+.widgetlayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: var(--radius);
+  pointer-events: none;
+}
+
+.wcode {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  padding: 0.6rem 0.7rem;
+  font-size: 0.76rem;
+  line-height: 1.55;
+  tab-size: 2;
+  white-space: pre;
+  overflow-wrap: normal;
+  resize: none;
 }
 
 .inkpad {

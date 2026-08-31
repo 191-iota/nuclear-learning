@@ -17,12 +17,13 @@ import {
   type TabletImage,
   type TabletPoint,
   type TabletStroke,
+  type TabletWidget,
   type TabletZone,
 } from '@/composables/inkExport';
 
 // The stroke model and the paint loop live in inkExport, which the notes store also
 // draws with. Re-exported here so the engine stays the one import a view needs.
-export type { TabletImage, TabletPoint, TabletStroke, TabletZone };
+export type { TabletImage, TabletPoint, TabletStroke, TabletWidget, TabletZone };
 
 /**
  * Stroke-based ink engine for a graphics tablet (Wacom & friends) drawing straight
@@ -75,6 +76,11 @@ export interface TabletState {
   hasImages: boolean; // at least one picture placed on the surface
   hasSelection: boolean; // a picture is picked up, so Delete has a target
   lockedImages: number; // pictures pinned to the surface, so the dock can offer them back
+  hasWidgets: boolean; // at least one widget placed on the surface
+  // Bumped on every redraw. The widget layer is elements above the canvas rather than
+  // paint on it, so it has to re-place itself whenever the view moves, and this is
+  // what a pan or a zoom tells it with.
+  viewRev: number;
   // Monotonic revision of everything on the surface. Reactive on purpose: it is what
   // the notes editor autosaves against, so a stroke, an erase, an undo or a picture
   // being moved all read as "there is something new to write to disk".
@@ -125,6 +131,8 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     hasImages: false,
     hasSelection: false,
     lockedImages: 0,
+    hasWidgets: false,
+    viewRev: 0,
     rev: 0,
   });
 
@@ -198,6 +206,11 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     // A picture counts as content, so Fit frames it and the board can be panned
     // around one even before a single stroke is written near it.
     for (const im of images) for (const p of imgCorners(im)) grow(p.x, p.y);
+    // A widget counts as content for the same reason a picture does.
+    for (const wd of widgets) {
+      grow(wd.x - wd.w / 2, wd.y - wd.h / 2);
+      grow(wd.x + wd.w / 2, wd.y + wd.h / 2);
+    }
     if (backdropRect) {
       grow(backdropRect.x, backdropRect.y);
       grow(backdropRect.x + backdropRect.w, backdropRect.y + backdropRect.h);
@@ -298,6 +311,7 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     if (!ctx || !c) return;
     ensureView();
     clampView();
+    state.viewRev += 1;
     const W = pageW();
     const S = scale(c);
     const { ox, oy } = offsets(c);
@@ -490,6 +504,13 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
 
   const images: TabletImage[] = [];
   const imgEls = new Map<string, HTMLImageElement>();
+
+  // Widgets are the other kind of object on the surface, and the engine holds them for
+  // the same reasons it holds pictures: Fit has to frame them, the export has to reach
+  // around them, and one save writes everything on the board at once. What it does NOT
+  // do is draw them. A widget is elements above the canvas (see WidgetLayer), because
+  // it has fields you type into, and the engine only owns where it sits.
+  const widgets: TabletWidget[] = [];
   let selectedImg = 0; // id, 0 = nothing selected
   let imgDrag:
     | {
@@ -707,6 +728,80 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     return JSON.parse(JSON.stringify(images)) as TabletImage[];
   }
 
+  // ---- widgets on the surface ----
+
+  function getWidgets(): TabletWidget[] {
+    return JSON.parse(JSON.stringify(widgets)) as TabletWidget[];
+  }
+
+  function setWidgets(list: TabletWidget[]): void {
+    widgets.length = 0;
+    for (const w of list) {
+      widgets.push({ ...w });
+      // Ids are handed out from one counter for every object on the surface, so a
+      // reopened note must not start issuing ids it is already using.
+      if (w.id >= nextId) nextId = w.id + 1;
+    }
+    bump();
+    scheduleRender();
+  }
+
+  /**
+   * Put a widget on the surface, placed the way a pasted picture is: a comfortable
+   * fraction of the view, centred on it, so it lands where you are looking and leaves
+   * board to write on around it.
+   */
+  function addWidget(src: string): TabletWidget {
+    const c = canvasRef.value;
+    const S = c ? scale(c) : 1;
+    const viewW = c ? c.width / S : pageW();
+    const viewH = c ? c.height / S : PAGE_H;
+    const wd: TabletWidget = {
+      id: nextId++,
+      src,
+      x: view.cx,
+      y: view.cy,
+      w: Math.round(Math.max(240, Math.min(viewW * 0.5, 620))),
+      h: Math.round(Math.max(180, Math.min(viewH * 0.5, 460))),
+      data: {},
+    };
+    widgets.push(wd);
+    bump();
+    scheduleRender();
+    return wd;
+  }
+
+  function updateWidget(id: number, patch: Partial<TabletWidget>): void {
+    const wd = widgets.find((x) => x.id === id);
+    if (!wd) return;
+    Object.assign(wd, patch);
+    bump();
+    scheduleRender();
+  }
+
+  function removeWidget(id: number): void {
+    const i = widgets.findIndex((x) => x.id === id);
+    if (i < 0) return;
+    widgets.splice(i, 1);
+    bump();
+    scheduleRender();
+  }
+
+  /**
+   * Where a page point lands on screen, in the CSS pixels the DOM measures in. The
+   * widget layer is elements over the canvas rather than paint on it, so it places
+   * itself with the same transform the renderer draws with. The canvas backing store
+   * is in device pixels and its box is not, hence the ratio.
+   */
+  function clientTransform(): { k: number; ox: number; oy: number } | null {
+    const c = canvasRef.value;
+    if (!c || !c.width) return null;
+    const rect = c.getBoundingClientRect();
+    const ratio = rect.width / c.width;
+    const { ox, oy } = offsets(c);
+    return { k: scale(c) * ratio, ox: ox * ratio, oy: oy * ratio };
+  }
+
   function setImages(list: TabletImage[]): void {
     images.length = 0;
     selectedImg = 0;
@@ -759,6 +854,7 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     state.hasInk = strokes.some((s) => s.zone === 'main');
     // A board holding only a pasted screenshot is still worth saving.
     state.hasImages = images.length > 0;
+    state.hasWidgets = widgets.length > 0;
     state.lockedImages = images.filter((im) => im.locked).length;
     if (selectedImg && !imageById(selectedImg)) selectImage(0);
     // Undo can put a lock back on the picture currently held; the frame around it
@@ -1505,11 +1601,13 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     backdrop = null;
     backdropRect = null;
     images.length = 0;
+    widgets.length = 0;
     imgDrag = null;
     pending = null;
     selectedImg = 0;
     state.hasSelection = false;
     state.hasImages = false;
+    state.hasWidgets = false;
     state.lockedImages = 0;
     endButtonErase();
     bump();
@@ -1536,6 +1634,7 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     const out = renderBoard({
       strokes,
       images,
+      widgets,
       imageEl: imgEl,
       backdrop: backdrop && backdropRect ? { el: backdrop, ...backdropRect } : null,
       zone,
@@ -1648,5 +1747,12 @@ export function useTablet(canvasRef: Ref<HTMLCanvasElement | null>, options: Use
     unlockImages,
     getImages,
     setImages,
+    // Widgets on the surface
+    addWidget,
+    updateWidget,
+    removeWidget,
+    getWidgets,
+    setWidgets,
+    clientTransform,
   };
 }

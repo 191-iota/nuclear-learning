@@ -63,6 +63,28 @@ export interface TabletImage {
   locked?: boolean;
 }
 
+/**
+ * A widget placed on the surface: the same kind of object a picture is, holding a
+ * component instead of pixels. Centre, size and its own saved state, in page units,
+ * so it round-trips through one blob with the rest of the note.
+ *
+ * It is the one board object that is not painted onto the canvas. A picture is
+ * pixels and can be drawn; a widget has fields you type into and sliders you drag,
+ * so it lives as real elements above the ink, positioned by the same transform. What
+ * ends up in the exported page image is its outline (see renderBoard), because the
+ * transcriber has to know something stood there.
+ */
+export interface TabletWidget {
+  id: number;
+  src: string; // JSX
+  x: number; // centre
+  y: number;
+  w: number;
+  h: number;
+  /** Whatever the component put in the `storage` it was handed. */
+  data?: Record<string, unknown>;
+}
+
 /** Decoded pictures, by source. A redraw must never wait on a download. */
 export type ImageResolver = (src: string) => HTMLImageElement | null;
 
@@ -269,6 +291,32 @@ export function drawImages(
 }
 
 /**
+ * What a widget leaves behind in an exported page: its outline and a word for what it
+ * is. The live thing is elements rather than pixels, so it cannot be painted here,
+ * and leaving nothing would hand the transcriber a hole in the middle of a page with
+ * writing arranged around it. An outline says something stood here and how much room
+ * it took, which is what the handwriting around it refers to.
+ */
+function drawWidgets(ctx: CanvasRenderingContext2D, list: TabletWidget[]): void {
+  for (const wd of list) {
+    const x = wd.x - wd.w / 2;
+    const y = wd.y - wd.h / 2;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(120, 120, 120, 0.55)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([10, 8]);
+    ctx.strokeRect(x, y, wd.w, wd.h);
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(120, 120, 120, 0.8)';
+    const size = Math.max(11, Math.min(26, wd.h * 0.08));
+    ctx.font = `${size}px ui-monospace, Menlo, monospace`;
+    ctx.textBaseline = 'top';
+    ctx.fillText('widget', x + size * 0.6, y + size * 0.5);
+    ctx.restore();
+  }
+}
+
+/**
  * Where a note saved before stroke persistence lands when its picture is laid under
  * the ink as a backdrop. The engine places it and the re-render has to agree with
  * the engine to the pixel, or a note would move the moment its picture was refreshed.
@@ -288,6 +336,7 @@ export function backdropBox(img: { width: number; height: number }): {
 export interface BoardLayers {
   strokes: TabletStroke[];
   images?: TabletImage[];
+  widgets?: TabletWidget[];
   imageEl?: ImageResolver;
   backdrop?: { el: CanvasImageSource; x: number; y: number; w: number; h: number } | null;
   /** 'main' is what grading sees; 'all' takes the scratch column along too. */
@@ -305,8 +354,11 @@ export function renderBoard(layers: BoardLayers): { url: string; w: number; h: n
   const zone = layers.zone ?? 'main';
   const ink = zone === 'all' ? layers.strokes.slice() : layers.strokes.filter((s) => s.zone === 'main');
   const pics = layers.images ?? [];
+  const wids = layers.widgets ?? [];
   const bg = zone === 'all' ? (layers.backdrop ?? null) : null;
-  if (ink.length === 0 && !bg && pics.length === 0) return { url: '', w: 0, h: 0 };
+  if (ink.length === 0 && !bg && pics.length === 0 && wids.length === 0) {
+    return { url: '', w: 0, h: 0 };
+  }
   const box = strokeBounds(ink);
   let minX = box ? box.minX : Infinity;
   let minY = box ? box.minY : Infinity;
@@ -321,6 +373,14 @@ export function renderBoard(layers: BoardLayers): { url: string; w: number; h: n
       maxX = Math.max(maxX, p.x);
       maxY = Math.max(maxY, p.y);
     }
+  }
+  // A widget is part of the page too, so the crop reaches around it even when the
+  // note is nothing but a widget.
+  for (const wd of wids) {
+    minX = Math.min(minX, wd.x - wd.w / 2);
+    minY = Math.min(minY, wd.y - wd.h / 2);
+    maxX = Math.max(maxX, wd.x + wd.w / 2);
+    maxY = Math.max(maxY, wd.y + wd.h / 2);
   }
   if (bg) {
     minX = Math.min(minX, bg.x);
@@ -350,6 +410,7 @@ export function renderBoard(layers: BoardLayers): { url: string; w: number; h: n
   ctx.setTransform(k, 0, 0, k, -minX * k, -minY * k);
   if (bg) ctx.drawImage(bg.el, bg.x, bg.y, bg.w, bg.h);
   drawImages(ctx, pics, layers.imageEl ?? (() => null));
+  drawWidgets(ctx, wids);
   drawStrokes(ctx, ink);
   return {
     url: out.toDataURL('image/jpeg', settings.export.jpegQuality),

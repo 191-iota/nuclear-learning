@@ -89,6 +89,9 @@ export interface Note {
   // Pictures placed on the board (pasted screenshots and the like), stored as their
   // own blob (<id>-img) so the strokes blob stays small and text-shaped.
   hasImgs?: boolean;
+  // Widgets placed on the board: the same kind of object, holding a component instead
+  // of pixels, in their own blob (<id>-wid) with the state each one has saved.
+  hasWidgets?: boolean;
   // Still being written: the editor autosaved it so nothing can be lost, but it has
   // never been handed in. Nothing transcribes a draft, here or on the next app start,
   // because reading a half-written page costs a model call and says little. Finishing
@@ -309,7 +312,14 @@ export function notesInFolder(folderId: string, subtree = false): Note[] {
 }
 
 export async function saveNoteFromPad(
-  input: { image: string; thumb: string; strokes?: unknown[]; images?: unknown[]; draft?: boolean },
+  input: {
+    image: string;
+    thumb: string;
+    strokes?: unknown[];
+    images?: unknown[];
+    widgets?: unknown[];
+    draft?: boolean;
+  },
   folderId: string = INBOX_ID,
 ): Promise<Note> {
   const n: Note = {
@@ -327,6 +337,7 @@ export async function saveNoteFromPad(
     hasImage: true,
     hasInk: Boolean(input.strokes?.length),
     hasImgs: Boolean(input.images?.length),
+    hasWidgets: Boolean(input.widgets?.length),
     draft: input.draft || undefined,
     extracted: false,
   };
@@ -336,6 +347,9 @@ export async function saveNoteFromPad(
     await blobPut(NOTES_COL, n.id, input.image);
     if (input.strokes?.length) await blobPut(NOTES_COL, `${n.id}-ink`, JSON.stringify(input.strokes));
     if (input.images?.length) await blobPut(NOTES_COL, `${n.id}-img`, JSON.stringify(input.images));
+    if (input.widgets?.length) {
+      await blobPut(NOTES_COL, `${n.id}-wid`, JSON.stringify(input.widgets));
+    }
   }
   // A draft is the editor putting the writing somewhere safe, not a note handed in:
   // there is nothing to transcribe yet and the pen is still on the page.
@@ -354,12 +368,20 @@ export async function saveNoteFromPad(
  */
 export async function saveInkProgress(
   id: string,
-  input: { image?: string; thumb?: string; strokes: unknown[]; images?: unknown[]; bg?: string },
+  input: {
+    image?: string;
+    thumb?: string;
+    strokes: unknown[];
+    images?: unknown[];
+    widgets?: unknown[];
+    bg?: string;
+  },
 ): Promise<void> {
   const n = notesStore.notes.find((x) => x.id === id);
   if (!n) return;
   n.hasInk = input.strokes.length > 0;
   n.hasImgs = Boolean(input.images?.length);
+  n.hasWidgets = Boolean(input.widgets?.length);
   if (input.thumb) n.thumb = input.thumb;
   if (input.image) n.hasImage = true;
   if (input.bg) n.hasBg = true;
@@ -371,6 +393,7 @@ export async function saveInkProgress(
   await blobPut(NOTES_COL, `${id}-ink`, JSON.stringify(input.strokes));
   // Written even when empty, so removing the last picture actually removes it.
   await blobPut(NOTES_COL, `${id}-img`, JSON.stringify(input.images ?? []));
+  await blobPut(NOTES_COL, `${id}-wid`, JSON.stringify(input.widgets ?? []));
 }
 
 /**
@@ -381,7 +404,14 @@ export async function saveInkProgress(
  */
 export async function updateNoteInk(
   id: string,
-  input: { image: string; thumb: string; strokes: unknown[]; images?: unknown[]; bg?: string },
+  input: {
+    image: string;
+    thumb: string;
+    strokes: unknown[];
+    images?: unknown[];
+    widgets?: unknown[];
+    bg?: string;
+  },
 ): Promise<void> {
   const n = notesStore.notes.find((x) => x.id === id);
   if (!n) return;
@@ -389,6 +419,7 @@ export async function updateNoteInk(
   n.hasImage = true;
   n.hasInk = input.strokes.length > 0;
   n.hasImgs = Boolean(input.images?.length);
+  n.hasWidgets = Boolean(input.widgets?.length);
   if (input.bg) n.hasBg = true;
   n.text = '';
   n.draft = false;
@@ -401,6 +432,7 @@ export async function updateNoteInk(
     await blobPut(NOTES_COL, `${id}-ink`, JSON.stringify(input.strokes));
     // Written even when empty, so removing the last picture actually removes it.
     await blobPut(NOTES_COL, `${id}-img`, JSON.stringify(input.images ?? []));
+    await blobPut(NOTES_COL, `${id}-wid`, JSON.stringify(input.widgets ?? []));
   }
   void extractNote(id);
 }
@@ -438,6 +470,19 @@ export async function loadNoteImages(id: string): Promise<unknown[] | null> {
   try {
     if (!dbState.available) return null;
     const raw = await blobGet(NOTES_COL, `${id}-img`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown[];
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The widgets a note has on its board, with whatever state each one had saved. */
+export async function loadNoteWidgets(id: string): Promise<unknown[] | null> {
+  try {
+    if (!dbState.available) return null;
+    const raw = await blobGet(NOTES_COL, `${id}-wid`);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as unknown[];
     return Array.isArray(parsed) ? parsed : null;
@@ -637,6 +682,7 @@ export async function deleteNote(id: string): Promise<void> {
       await colDelete(NOTES_COL, `${id}-ink`); // removes the strokes blob (no JSON exists)
       await colDelete(NOTES_COL, `${id}-bg`);
       await colDelete(NOTES_COL, `${id}-img`);
+      await colDelete(NOTES_COL, `${id}-wid`);
       // The retrieval index too, by collection name rather than by importing
       // retrieval.ts, which imports this module and would close the cycle.
       await colDelete('vectors', id);

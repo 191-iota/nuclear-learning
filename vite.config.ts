@@ -3,6 +3,7 @@ import vue from '@vitejs/plugin-vue';
 import { fileURLToPath, URL } from 'node:url';
 import { localDb } from './server/localdb';
 import { backupSync } from './server/backup';
+import { jsxCompiler } from './server/jsx';
 
 // web_pen_sdk ships a webpack CommonJS bundle that transitively includes
 // firebase / jszip / jquery and references the Node `global` identifier.
@@ -18,6 +19,9 @@ export default defineConfig(({ mode }) => ({
     vue(),
     localDb(fileURLToPath(new URL('./data', import.meta.url))),
     backupSync(fileURLToPath(new URL('.', import.meta.url)), loadEnv(mode, process.cwd(), 'NL_')),
+    // Widgets on the board hold JSX, and the server compiles it with the transformer
+    // vite's own bundler already carries (server/jsx.ts).
+    jsxCompiler(),
   ],
   resolve: {
     alias: {
