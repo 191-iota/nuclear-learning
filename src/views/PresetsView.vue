@@ -31,14 +31,13 @@ const inkStatus = computed(() => {
 
 /**
  * Model and effort are typed, not picked. The shipped list is offered as
- * suggestions through a datalist, but anything can be entered, so a model released
- * after this build is usable the day it lands instead of waiting for a code change.
+ * suggestions through a datalist, but anything can be entered, so a model pulled
+ * after this build is usable the moment it lands instead of waiting for a code change.
  *
- * The price table is the one catch worth saying out loud: modelInfo() falls back to
- * the first entry for an id it does not know, so the Usage tab would bill a custom
- * model at that rate without ever mentioning it.
+ * The catch worth saying out loud is that this box cannot see what the machine holds:
+ * an id Ollama has never pulled fails at the request rather than here, which is what
+ * the line under an unrecognised id is for.
  */
-const fallbackLabel = MODELS[0].label;
 
 function unknownModel(id: string): boolean {
   return Boolean(id?.trim()) && !MODELS.some((m) => m.id === id);
@@ -68,17 +67,17 @@ function unknownModel(id: string): boolean {
             <div class="field span-2">
               <label>Solve model</label>
               <input v-model="settings.api.solveModel" list="nl-models" type="text" spellcheck="false" autocapitalize="off" placeholder="model id" />
-              <span v-if="unknownModel(settings.api.solveModel)" class="fieldwarn">Not in the price table, so Usage prices it as {{ fallbackLabel }}.</span>
+              <span v-if="unknownModel(settings.api.solveModel)" class="fieldwarn">Not in the shipped list. It answers only if ollama has pulled it.</span>
             </div>
             <div class="field span-2">
               <label>Verify model (cheap)</label>
               <input v-model="settings.api.verifyModel" list="nl-models" type="text" spellcheck="false" autocapitalize="off" placeholder="model id" />
-              <span v-if="unknownModel(settings.api.verifyModel)" class="fieldwarn">Not in the price table, so Usage prices it as {{ fallbackLabel }}.</span>
+              <span v-if="unknownModel(settings.api.verifyModel)" class="fieldwarn">Not in the shipped list. It answers only if ollama has pulled it.</span>
             </div>
             <div class="field span-2">
               <label>Confirm model</label>
               <input v-model="settings.api.confirmModel" list="nl-models" type="text" spellcheck="false" autocapitalize="off" placeholder="model id" />
-              <span v-if="unknownModel(settings.api.confirmModel)" class="fieldwarn">Not in the price table, so Usage prices it as {{ fallbackLabel }}.</span>
+              <span v-if="unknownModel(settings.api.confirmModel)" class="fieldwarn">Not in the shipped list. It answers only if ollama has pulled it.</span>
             </div>
           </div>
 
@@ -97,7 +96,7 @@ function unknownModel(id: string): boolean {
             <div class="field span-2">
               <label>Chat model (Notes mode)</label>
               <input v-model="settings.api.chatModel" list="nl-models" type="text" spellcheck="false" autocapitalize="off" placeholder="model id" />
-              <span v-if="unknownModel(settings.api.chatModel)" class="fieldwarn">Not in the price table, so Usage prices it as {{ fallbackLabel }}.</span>
+              <span v-if="unknownModel(settings.api.chatModel)" class="fieldwarn">Not in the shipped list. It answers only if ollama has pulled it.</span>
             </div>
             <div class="field span-2">
               <label>Chat effort</label>
@@ -113,7 +112,7 @@ function unknownModel(id: string): boolean {
             <div class="field span-2">
               <label>Note transcription model</label>
               <input v-model="settings.api.noteModel" list="nl-models" type="text" spellcheck="false" autocapitalize="off" placeholder="model id" />
-              <span v-if="unknownModel(settings.api.noteModel)" class="fieldwarn">Not in the price table, so Usage prices it as {{ fallbackLabel }}.</span>
+              <span v-if="unknownModel(settings.api.noteModel)" class="fieldwarn">Not in the shipped list. It answers only if ollama has pulled it.</span>
             </div>
             <div class="field span-2">
               <label>Transcription effort</label>
@@ -122,7 +121,7 @@ function unknownModel(id: string): boolean {
             <div class="field span-2">
               <label>Background model (cards, drills, index)</label>
               <input v-model="settings.api.backgroundModel" list="nl-models" type="text" spellcheck="false" autocapitalize="off" placeholder="model id" />
-              <span v-if="unknownModel(settings.api.backgroundModel)" class="fieldwarn">Not in the price table, so Usage prices it as {{ fallbackLabel }}.</span>
+              <span v-if="unknownModel(settings.api.backgroundModel)" class="fieldwarn">Not in the shipped list. It answers only if ollama has pulled it.</span>
             </div>
           </div>
 
@@ -277,8 +276,11 @@ function unknownModel(id: string): boolean {
           <div class="row" style="margin-top: 0.8rem">
             <span class="muted" style="font-size: 0.72rem">
               The solve model reads the problem once ("Problem written") and also writes the hints;
-              the cheap model grades each Check press; the confirm model judges the Finish. Prices
-              come from the model, so the Usage cost is exact per request.
+              the verify model grades each Check press; the confirm model judges the Finish. All of
+              them are answered by Ollama on this machine, so nothing here leaves the laptop and
+              the only thing a request spends is your patience. Effort is the dial for that: 'none'
+              answers straight away, anything else lets the model think first and costs about five
+              times the wait.
             </span>
             <span class="spacer" />
             <ConfirmButton ghost label="Reset engine" confirm-label="Reset it" title="Put every engine setting back to the shipped default" @confirm="resetSettings" />

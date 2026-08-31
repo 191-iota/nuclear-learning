@@ -239,8 +239,6 @@ export function useFeedback() {
       role,
       input: u.prompt_tokens ?? 0,
       output: u.completion_tokens ?? 0, // includes reasoning tokens
-      cacheRead: u.prompt_tokens_details?.cached_tokens ?? 0,
-      cacheCreate: 0, // OpenAI has no separate cache-write charge
     });
   }
 
@@ -312,7 +310,7 @@ export function useFeedback() {
   // Lesson capture: the moment a problem turns CORRECT after an error, the error and
   // the worked solution are already in hand from this request. One per problem; nothing
   // is captured when the work was right the first time. The card itself is written by
-  // a dedicated gpt-5.4-mini call (a specific recall question, not the cryptic live nudge);
+  // a dedicated background call (a specific recall question, not the cryptic live nudge);
   // that runs fire-and-forget so the chime is never delayed, and the inputs are snap-
   // shotted now because the session state may move on before it resolves.
   function maybeCaptureLesson(verdict: string, mode: Mode): void {
@@ -511,7 +509,7 @@ export function useFeedback() {
     if (history.length === 0) return [];
     // History goes last among the check/finish blocks: it grows over the page's life,
     // so keeping it behind the stable reference and instructions leaves that prefix
-    // intact for OpenAI prompt caching. Every entry here WAS delivered (buttons speak
+    // intact for the server's prompt cache. Every entry here WAS delivered (buttons speak
     // immediately), so the old [unheard] bookkeeping is gone with the scan loop.
     return [
       '',
@@ -634,8 +632,9 @@ export function useFeedback() {
     return lines.join('\n');
   }
 
-  // One structured call to a given model. Models that don't take the effort
-  // parameter have it omitted (see models.ts). When
+  // One structured call to a given model. An effort of 'none' is a real answer here and is
+  // sent as one; only a model whose entry says it takes no effort at all has it left off,
+  // and api.ts fills 'none' in behind that (see models.ts). When
   // `tagSkills` is set the call also carries the constant skill-assessor block (cached)
   // and the wider tagging schema, so the reply includes difficulty + per-skill tags;
   // the routine cheap checks pass `tagSkills` false to stay lean.
@@ -667,7 +666,8 @@ export function useFeedback() {
     const tag = tagSkills && settings.api.trackSkills;
     const schema = tag ? SKILL_SOLUTION_SCHEMA : SOLUTION_SCHEMA;
     // The skill-assessor block is byte-identical across every call, so it leads the system prompt as
-    // a stable prefix that OpenAI's automatic prompt caching can reuse after the first call.
+    // a stable prefix. Ollama keeps the last prompt's key/value cache and starts a request at the
+    // first token that differs, so an unchanged prefix is read once and skipped on every call after.
     const system = tag ? `${SKILL_ASSESSOR}\n\n${mode.systemPrompt}` : mode.systemPrompt;
     const params: any = {
       model,

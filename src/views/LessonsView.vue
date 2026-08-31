@@ -23,7 +23,7 @@ const all = computed(() => [...lessonStore.lessons].sort((a, b) => b.ts - a.ts))
 // Cards captured before the tailored-card writer existed (or when its call failed)
 // have no `front` or a bad one (answer copied onto the front), and ask cards from
 // before the theory-first writer are anchored on the question's wording. Rebuild
-// re-writes both classes on gpt-5.4 mini; ask duplicates the writer reports as
+// re-writes both classes on the background model; ask duplicates the writer reports as
 // covered get folded out. The in-flight state lives in the store so a tab switch
 // mid-rebuild can't hide (or double-start) a running loop.
 const needsCard = computed(() => lessonStore.lessons.filter(needsRewrite).length);

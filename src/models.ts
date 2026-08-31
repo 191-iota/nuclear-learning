@@ -1,34 +1,34 @@
-// Model price + capability map. Used for request shaping (does it take `reasoning_effort`?)
-// and for per-record cost pricing (each scan can run on a different model now).
+// The models the app offers, and what a request to one has to look like. They all run
+// on this machine through Ollama, so nothing here is a price: what used to be a rate
+// card is now the shipped list behind the model boxes in Presets and the chat's own
+// picker, plus the one flag that changes a request.
+//
+// `effort` says the id takes `reasoning_effort`, which Ollama reads as how long the
+// model thinks before it answers. Every Gemma 4 build takes it, and the app sends it on
+// every request, 'none' included: leaving it out is not "no thinking" but the model's
+// own default, which is to think (api.ts).
+//
+// Pull anything else and type its id into Presets; the list is a set of suggestions,
+// not a gate. `ollama list` is the authority on what this machine can actually answer.
 export interface ModelInfo {
   id: string;
   label: string;
-  in: number; // $ per 1M input tokens
-  cachedIn: number; // $ per 1M cached input tokens (the stable prompt prefix re-read)
-  out: number; // $ per 1M output tokens
-  effort: boolean; // reasoning model: takes the reasoning_effort parameter
+  effort: boolean;
 }
 
-// OpenAI reasoning models. Prices in $/1M tokens, pinned here (the Usage tab prices
-// every record from this table), verified 2026-07-26 against
-// developers.openai.com/api/docs/pricing. All take reasoning_effort, are
-// vision-capable, and support strict json_schema structured output. The GPT-5.6
-// family (Sol/Terra/Luna, 2026-07-09) additionally bills prompt-cache WRITES at
-// 1.25x input; the usage line cannot see write tokens, so first-time prefixes are
-// undercounted by up to a quarter of their input price. Terra is the default first
-// entry: it costs exactly what GPT-5.4 bills today and modelInfo() falls back to
-// MODELS[0] for unknown ids.
+// E4B is the default first entry and what modelInfo() falls back to for an unknown id:
+// it reads handwriting well, answers a page in seconds, and leaves enough of 16 GB for
+// the rest of the machine. 12B is the one to switch to for a hard page when you can
+// wait; the QAT build of E4B trades a little quality for a smaller footprint.
 export const MODELS: ModelInfo[] = [
-  { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', in: 2.5, cachedIn: 0.25, out: 15, effort: true },
-  { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', in: 1, cachedIn: 0.1, out: 6, effort: true },
-  { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', in: 5, cachedIn: 0.5, out: 30, effort: true },
-  { id: 'gpt-5.4', label: 'GPT-5.4', in: 2.5, cachedIn: 0.25, out: 15, effort: true },
-  { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini', in: 0.75, cachedIn: 0.075, out: 4.5, effort: true },
-  { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano', in: 0.2, cachedIn: 0.02, out: 1.25, effort: true },
+  { id: 'gemma4:e4b', label: 'Gemma 4 E4B', effort: true },
+  { id: 'gemma4:12b', label: 'Gemma 4 12B', effort: true },
+  { id: 'gemma4:e4b-it-qat', label: 'Gemma 4 E4B (QAT)', effort: true },
 ];
 
-// 'max' is a GPT-5.6 level; the 5.4 family tops out at xhigh and rejects it.
-export const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+// What Ollama accepts. 'none' is the one that turns thinking off outright; the rest all
+// turn it on, and on a page of handwriting they cost about five times the wall clock.
+export const EFFORTS = ['none', 'low', 'medium', 'high'];
 
 export function modelInfo(id: string): ModelInfo {
   return MODELS.find((m) => m.id === id) ?? MODELS[0];

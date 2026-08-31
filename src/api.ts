@@ -1,12 +1,18 @@
 import OpenAI from 'openai';
 
 /**
- * The single door to OpenAI. Every request in the app goes through createCompletion(),
- * which joins a global queue with exactly one request in flight at a time: the next
- * starts only after the previous one settles. The scan loop was already serialized in
- * MainView, but the fire-and-forget lesson card and an on-demand drill could still
- * overlap a scan; owning the client here (no module holds its own) makes overlap
- * structurally impossible rather than per-caller discipline.
+ * The single door to the model server, which is this machine. Ollama answers on an
+ * OpenAI-shaped endpoint, so the client library stays and only the address moves:
+ * VITE_OLLAMA_BASE_URL, or http://127.0.0.1:11434/v1 when nothing is set. No page,
+ * transcript or question leaves the laptop, which is also why there is no key here to
+ * hold or to rotate; the client refuses an empty one, and that is all the placeholder
+ * below is for.
+ *
+ * Every request in the app goes through createCompletion(), which joins a global queue
+ * with exactly one request in flight at a time: the next starts only after the previous
+ * one settles. That rule was written to stop a fire-and-forget lesson card overlapping a
+ * scan, and it carries its weight twice over now that the model is local: one GPU, one
+ * loaded model, and a second request in flight would only take memory from the first.
  *
  * The waiting line has two lanes. Scan-lane work (solve/verify/confirm, and a drill
  * the learner tapped and is waiting on) always runs before background work (the
@@ -18,17 +24,46 @@ import OpenAI from 'openai';
  */
 let client: OpenAI | null = null;
 
+const BASE_URL = import.meta.env.VITE_OLLAMA_BASE_URL || 'http://127.0.0.1:11434/v1';
+
 function getClient(): OpenAI {
   if (!client) {
-    const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new Error('Missing VITE_OPENAI_API_KEY. Copy .env.example to .env and add your key.');
-    }
-    // Reasoning models legitimately take 30-90s at medium/high effort, so the default
-    // timeout is generous; callers pass a tighter per-request one where it fits (drill).
-    client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true, timeout: 90000, maxRetries: 1 });
+    client = new OpenAI({
+      baseURL: BASE_URL,
+      // Ollama neither reads nor needs one; the client insists on a non-empty string.
+      apiKey: 'ollama',
+      dangerouslyAllowBrowser: true,
+      // A local answer usually lands in seconds, but the first request after a boot
+      // waits for the weights to be read off disk, and a page sent to a thinking model
+      // can run for a minute on its own. Callers pass a tighter one where it fits.
+      timeout: 180000,
+      maxRetries: 1,
+    });
   }
   return client;
+}
+
+/**
+ * What a request needs on the way out that it did not when it was billed by the token.
+ *
+ * `reasoning_effort` is never left off. Ollama reads it as how long the model thinks
+ * before it answers, and leaving it out does not mean no thinking, it means the model's
+ * own default, which is to think. On a page of handwriting that costs about five times
+ * the wall clock and reads the page no better (gemma4:e4b: 7s against 35s on the same
+ * page, and the fast one was the accurate one). Deliberation is worth asking for by
+ * name where it pays, and it should never arrive by omission.
+ *
+ * `max_completion_tokens` is the hosted spelling and Ollama ignores it, so the same
+ * ceiling goes out as `max_tokens` too. Without it a model that starts repeating itself
+ * runs until the timeout rather than stopping at the ceiling the caller set.
+ */
+function shape(params: any): any {
+  const out = { ...params };
+  if (out.reasoning_effort === undefined) out.reasoning_effort = 'none';
+  if (out.max_tokens === undefined && out.max_completion_tokens !== undefined) {
+    out.max_tokens = out.max_completion_tokens;
+  }
+  return out;
 }
 
 export type Lane = 'scan' | 'background';
@@ -55,11 +90,11 @@ export function createCompletion(
         let req: Promise<any>;
         try {
           req = getClient().chat.completions.create(
-            params,
+            shape(params),
             opts?.timeout ? { timeout: opts.timeout } : undefined,
           );
         } catch (err) {
-          // getClient can throw synchronously (missing key); the queue must survive it.
+          // getClient can throw synchronously; the queue must survive it.
           inFlight = false;
           reject(err);
           pump();
@@ -76,9 +111,11 @@ export function createCompletion(
 }
 
 /**
- * Embeddings for the notebook's retrieval index. Same queue and the same one-in-flight
- * rule as everything else, on the background lane by default: indexing a folder must
- * never make the pen wait. Batched by the caller, since the endpoint takes an array.
+ * Embeddings for the notebook's retrieval index, from the small embedding model beside
+ * the big one (settings.api.embedModel). Same queue and the same one-in-flight rule as
+ * everything else, on the background lane by default: indexing a folder must never make
+ * the pen wait, and it must never take the GPU from a page that is being read. Batched
+ * by the caller, since the endpoint takes an array.
  */
 export function createEmbeddings(
   params: { model: string; input: string[] },
@@ -111,7 +148,7 @@ export function createEmbeddings(
 }
 
 // Strip control characters a model's broken JSON string escaping can smuggle past the
-// strict schema: a live gpt-5.4 reply once mis-escaped the · in a problem label as
+// strict schema: a live reply once mis-escaped the · in a problem label as
 // backslash-u0000-b7, landing a literal NUL byte in the parsed string. Newlines and
 // tabs stay: the solution checklist is line-structured.
 export function cleanText(s: unknown): string {
@@ -123,6 +160,7 @@ export function cleanText(s: unknown): string {
 // and that a scan never waits behind a card.
 if (typeof window !== 'undefined') {
   (window as unknown as { __nlApi: unknown }).__nlApi = () => ({
+    baseUrl: BASE_URL,
     inFlight,
     queued: pending.length,
     scan: pending.filter((j) => j.lane === 'scan').length,

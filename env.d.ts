@@ -1,7 +1,8 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  readonly VITE_OPENAI_API_KEY: string;
+  /** Where Ollama answers. Optional: api.ts falls back to http://127.0.0.1:11434/v1. */
+  readonly VITE_OLLAMA_BASE_URL: string;
 }
 
 interface ImportMeta {

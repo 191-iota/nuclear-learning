@@ -126,10 +126,12 @@ export async function noteAsk(input: {
         json_schema: { name: 'note_ask_reply', strict: true, schema: CHAT_SCHEMA },
       },
     };
-    if (modelInfo(model).effort && settings.api.chatEffort !== 'none') {
-      params.reasoning_effort = settings.api.chatEffort;
+    if (modelInfo(model).effort) {
+      params.reasoning_effort = settings.api.chatEffort || 'none';
     }
-    const resp = await createCompletion(params, { timeout: 60000 });
+    // Local tokens arrive slower than hosted ones, and the first request after a boot
+    // waits for the weights as well, so the window is wider than the answer needs.
+    const resp = await createCompletion(params, { timeout: 120000 });
     const u = (resp as any)?.usage ?? {};
     recordUsage({
       mode: 'notes',
@@ -137,8 +139,6 @@ export async function noteAsk(input: {
       role: 'ask',
       input: u.prompt_tokens ?? 0,
       output: u.completion_tokens ?? 0,
-      cacheRead: u.prompt_tokens_details?.cached_tokens ?? 0,
-      cacheCreate: 0,
     });
     const parsed = JSON.parse((resp.choices?.[0]?.message?.content ?? '').trim()) as { reply?: string };
     const reply = cleanText(parsed.reply).trim();
@@ -223,9 +223,9 @@ export async function chatAsk(input: {
     }
     lines.push('', `The student's newest message: ${input.question}`);
 
-    // Per conversation, falling back to the setting. The effort stays global: it is
-    // tuned to what this persona does, and every tier takes it (the request drops it
-    // for a model whose price table entry says it has none).
+    // Per conversation, falling back to the setting. The effort stays global: it is tuned
+    // to what this persona does, and it is always sent, 'none' included, since leaving it
+    // out is what turns thinking ON at the other end (api.ts).
     const model = input.model?.trim() || settings.api.chatModel;
     const params: any = {
       model,
@@ -239,10 +239,10 @@ export async function chatAsk(input: {
         json_schema: { name: 'chat_reply', strict: true, schema: CHAT_SCHEMA },
       },
     };
-    if (modelInfo(model).effort && settings.api.chatEffort !== 'none') {
-      params.reasoning_effort = settings.api.chatEffort;
+    if (modelInfo(model).effort) {
+      params.reasoning_effort = settings.api.chatEffort || 'none';
     }
-    const resp = await createCompletion(params, { timeout: 90000 });
+    const resp = await createCompletion(params, { timeout: 180000 });
     const u = (resp as any)?.usage ?? {};
     recordUsage({
       mode: 'chat',
@@ -250,8 +250,6 @@ export async function chatAsk(input: {
       role: 'ask',
       input: u.prompt_tokens ?? 0,
       output: u.completion_tokens ?? 0,
-      cacheRead: u.prompt_tokens_details?.cached_tokens ?? 0,
-      cacheCreate: 0,
     });
     const out = (resp.choices?.[0]?.message?.content ?? '').trim();
     const parsed = JSON.parse(out) as { reply?: string };

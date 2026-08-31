@@ -30,19 +30,19 @@
     "chimeError": "error.mp3"
   },
   "api": {
-    "maxTokens": 32000,
-    "solveModel": "gpt-5.6-terra",
-    "verifyModel": "gpt-5.4-mini",
-    "verifyEffort": "medium",
-    "confirmModel": "gpt-5.6-terra",
-    "chatModel": "gpt-5.6-terra",
-    "chatEffort": "low",
-    "noteModel": "gpt-5.4-mini",
-    "noteEffort": "low",
-    "backgroundModel": "gpt-5.4-mini",
+    "maxTokens": 8000,
+    "solveModel": "gemma4:e4b",
+    "verifyModel": "gemma4:e4b",
+    "verifyEffort": "none",
+    "confirmModel": "gemma4:e4b",
+    "chatModel": "gemma4:e4b",
+    "chatEffort": "medium",
+    "noteModel": "gemma4:e4b",
+    "noteEffort": "none",
+    "backgroundModel": "gemma4:e4b",
     "trackSkills": true,
     "masteryTarget": 0,
-    "embedModel": "text-embedding-3-small"
+    "embedModel": "embeddinggemma"
   },
   "export": {
     "maxEdgePx": 1600,

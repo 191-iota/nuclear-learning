@@ -6,16 +6,20 @@ import { settings } from '@/stores/settings';
  * Writes one tailored review card from a corrected mistake. The live grading loop
  * hands back a one-line nudge meant for self-correction mid-solve; that makes a poor
  * flashcard, because the cue ("recall the mistake you fixed") names nothing specific.
- * So once a problem is solved we spend one explicit GPT-5.4 mini (high-effort) call to turn the
+ * So once a problem is solved we spend one explicit background call to turn the
  * mistake into a real card: a specific recall question on the front, the answer on
- * the back, with the math in LaTeX. It writes the HARDEST transform in the app (invent a recall
- * question that isolates the slip and withholds the answer), so it runs at HIGH reasoning effort.
+ * the back, with the math in LaTeX. It writes the hardest transform in the app (invent a
+ * recall question that isolates the slip and withholds the answer), which is why it used to
+ * run at high reasoning effort. It asks for none now: the model is local, a minute of
+ * deliberation here is a minute the next page waits behind it, and of every call in the app
+ * this is the one the learner is least likely to be watching.
  * Used both when a lesson is first captured and to rebuild older cards.
  */
-// The cheap text-only helpers (lesson card, drill, archive index) share one
-// background model, set in Presets (`api.backgroundModel`). Their reasoning efforts
-// stay per-job below, since each is tuned to the work rather than to the tier.
-const backgroundModel = (): string => settings.api.backgroundModel || 'gpt-5.4-mini';
+// The text-only helpers (lesson card, drill, archive index) share one background
+// model, set in Presets (`api.backgroundModel`), and all three ask for no thinking.
+// There is one model on one machine: a helper that stops to think holds the slot the
+// next page needs, and none of these three is worth a page of silence.
+const backgroundModel = (): string => settings.api.backgroundModel || 'gemma4:e4b';
 
 const CARD_SCHEMA = {
   type: 'object',
@@ -100,7 +104,7 @@ async function writeCard(
         // High-effort reasoning counts against this budget; 2500 silently truncated the
         // card (finish_reason length -> unparseable -> lesson lost) on hard slips.
         max_completion_tokens: 8000,
-        reasoning_effort: 'high',
+        reasoning_effort: 'none',
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -117,8 +121,6 @@ async function writeCard(
       role: 'lesson',
       input: u.prompt_tokens ?? 0,
       output: u.completion_tokens ?? 0,
-      cacheRead: u.prompt_tokens_details?.cached_tokens ?? 0,
-      cacheCreate: 0,
     });
     const out = (resp.choices?.[0]?.message?.content ?? '').trim();
     const p = JSON.parse(out) as { covered?: boolean; front?: string; back?: string };

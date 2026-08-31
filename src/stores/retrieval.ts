@@ -33,7 +33,11 @@ const CHUNK_OVERLAP = 150;
 const MAX_CHUNKS_PER_NOTE = 60; // a filed thesis must not become a thousand vectors
 const EMBED_BATCH = 64;
 
-export const embedModel = (): string => settings.api.embedModel || 'text-embedding-3-small';
+// A model of its own, small enough to sit beside the big one without taking the memory
+// that one needs: `ollama pull embeddinggemma`. Set in config/settings.json
+// (`api.embedModel`). A record remembers which model wrote it, so changing this here
+// re-indexes rather than mixing two kinds of vector in one search.
+export const embedModel = (): string => settings.api.embedModel || 'embeddinggemma';
 
 export interface VecChunk {
   i: number;
@@ -147,8 +151,6 @@ async function embed(texts: string[], lane: 'scan' | 'background'): Promise<numb
       role: 'note',
       input: u.prompt_tokens ?? u.total_tokens ?? 0,
       output: 0,
-      cacheRead: 0,
-      cacheCreate: 0,
     });
     for (const d of (resp as any)?.data ?? []) out.push(d.embedding as number[]);
   }

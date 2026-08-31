@@ -15,7 +15,7 @@ import {
   setConversationModel,
 } from '@/stores/chat';
 import { settings } from '@/stores/settings';
-import { MODELS, modelInfo } from '@/models';
+import { MODELS } from '@/models';
 import {
   folderPath,
   folderTree,
@@ -142,14 +142,14 @@ function onNew(): void {
 // old behaviour is still what happens by default and the setting still moves it.
 //
 // The list is the shipped one plus a way to type an id, matching Presets: a model
-// released after this build has to be usable the day it lands.
+// pulled after this build has to be usable the moment it lands.
 
 const OTHER = '@other'; // a select value no model id can collide with
 
 const typingModel = ref(false);
 const modelDraft = ref('');
 
-/** What the next turn will be sent to, named the way the price table names it. */
+/** What the next turn will be sent to, named the way the shipped list names it. */
 function modelLabel(id: string): string {
   return MODELS.find((m) => m.id === id)?.label ?? id;
 }
@@ -158,12 +158,12 @@ const activeModel = computed(() => conversationModel(conv.value));
 
 const modelTitle = computed(() => {
   const id = activeModel.value;
-  const known = MODELS.find((m) => m.id === id);
-  const price = known
-    ? `$${known.in} per million in, $${known.out} out`
-    : `not in the price table, so Usage prices it as ${modelInfo(id).label}`;
+  const known = MODELS.some((m) => m.id === id);
+  const where = known
+    ? 'one of the models this build ships with'
+    : 'not in the shipped list, so it answers only if ollama has pulled it';
   const source = conv.value?.model ? 'this chat' : 'the Presets default';
-  return `Every turn of this chat runs on ${id} (${price}), set by ${source}.`;
+  return `Every turn of this chat runs on ${id} (${where}), set by ${source}.`;
 });
 
 function onModelPick(value: string): void {

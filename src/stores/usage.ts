@@ -1,13 +1,17 @@
 import { reactive } from 'vue';
-import { modelInfo, type ModelInfo } from '@/models';
+import { MODELS } from '@/models';
 
 /**
- * Reactive token-usage log. Every scan records its API `usage` here; the Usage
+ * Reactive token-usage log. Every request records its `usage` here; the Usage
  * dashboard reads it live. Records are grouped by "page" (one Clear-to-Clear
  * session) and persisted to localStorage so the dashboard survives reloads.
  *
- * Each record carries the model it ran on, so cost is priced per record (the
- * tiered flow runs solves/confirms on the strong model and routine verifies on a cheap one).
+ * It counted money once, because every token was billed. Nothing here is billed now:
+ * the model runs on this machine, and the only thing a page costs is the time you spend
+ * waiting for it. So the tab counts tokens, which is what that wait is made of and the
+ * one honest measure left of how much the model was asked to read and write. Each
+ * record still carries the model it ran on, because a page put through E4B and the same
+ * page put through 12B are not the same work.
  *
  * Console access:  __nlUsage.summary() · __nlUsage.records() · __nlUsage.clear()
  */
@@ -34,8 +38,6 @@ export interface UsageRecord {
   role: Role;
   input: number;
   output: number; // includes thinking tokens
-  cacheRead: number;
-  cacheCreate: number;
 }
 
 const KEY = 'nl.usage.v1';
@@ -61,13 +63,20 @@ function load(): Persisted {
 
 export const usage = reactive(load());
 
-// Old records (pre-tiering) lack model/role; fall back gracefully so the chart
-// still prices and groups them.
+// Old records (pre-tiering) lack model/role; fall back gracefully so the chart still
+// groups them. Records written before the app moved to local models keep the hosted id
+// they ran on, and modelLabel() below shows it as it was rather than renaming it.
 function recModel(r: UsageRecord): string {
-  return r.model ?? 'gpt-5.4';
+  return r.model ?? 'unknown';
 }
 function recRole(r: UsageRecord): Role {
   return r.role ?? ((r as unknown as { cached?: boolean }).cached ? 'verify' : 'solve');
+}
+function modelLabel(id: string): string {
+  return MODELS.find((m) => m.id === id)?.label ?? id;
+}
+function tokensOf(r: UsageRecord): number {
+  return (r.input ?? 0) + (r.output ?? 0);
 }
 
 function persist(): void {
@@ -83,14 +92,6 @@ export function newPage(): void {
   // Persist the bump itself: a reload straight after Clear used to resurrect the old
   // page number and merge the next problem's records into the previous problem's bar.
   persist();
-}
-
-// Price a record's input with the cache discount: `input` (prompt_tokens) INCLUDES the
-// cached prefix, which is billed at the cachedIn rate — pricing it all at the full rate
-// overstated every cost figure on the dashboard.
-function inputCostUSD(r: UsageRecord, info: ModelInfo): number {
-  const cached = Math.min(Math.max(r.cacheRead ?? 0, 0), r.input ?? 0);
-  return ((r.input - cached) * info.in + cached * info.cachedIn) / 1e6;
 }
 
 export function recordUsage(entry: Omit<UsageRecord, 'page' | 'ts'>): void {
@@ -114,9 +115,7 @@ export interface PageStat {
   verifies: number;
   input: number;
   output: number;
-  inputCostUSD: number;
-  outputCostUSD: number;
-  costUSD: number;
+  tokens: number;
 }
 
 export function perPage(): PageStat[] {
@@ -124,22 +123,11 @@ export function perPage(): PageStat[] {
   for (const r of usage.records) {
     let s = byPage.get(r.page);
     if (!s) {
-      s = {
-        page: r.page,
-        scans: 0,
-        solves: 0,
-        verifies: 0,
-        input: 0,
-        output: 0,
-        inputCostUSD: 0,
-        outputCostUSD: 0,
-        costUSD: 0,
-      };
+      s = { page: r.page, scans: 0, solves: 0, verifies: 0, input: 0, output: 0, tokens: 0 };
       byPage.set(r.page, s);
     }
-    const info = modelInfo(recModel(r));
     // Lesson cards and drill problems are page-less side calls, not scans of the pad;
-    // their cost still lands on the page's totals but never in the scan buckets.
+    // their tokens still land on the page's totals but never in the scan buckets.
     const role = recRole(r);
     if (role !== 'lesson' && role !== 'drill') {
       s.scans += 1;
@@ -148,18 +136,16 @@ export function perPage(): PageStat[] {
     }
     s.input += r.input;
     s.output += r.output;
-    s.inputCostUSD += inputCostUSD(r, info);
-    s.outputCostUSD += (r.output * info.out) / 1e6;
   }
   const stats = [...byPage.values()].sort((a, b) => a.page - b.page);
-  for (const s of stats) s.costUSD = s.inputCostUSD + s.outputCostUSD;
+  for (const s of stats) s.tokens = s.input + s.output;
   return stats;
 }
 
 // One column per problem, but bucketed into at most `maxBars` so the chart stays the
 // same width however many problems you do. While there are fewer problems than bars each
 // column is exactly one problem (fromPage === toPage); past that, consecutive problems
-// are folded into near-equal groups and their costs summed, so the per-problem shape (and
+// are folded into near-equal groups and their tokens summed, so the per-problem shape (and
 // the input/output split) survives the grouping instead of growing one bar forever.
 export interface ProblemBar {
   fromPage: number;
@@ -168,9 +154,7 @@ export interface ProblemBar {
   scans: number;
   input: number;
   output: number;
-  inputCostUSD: number;
-  outputCostUSD: number;
-  costUSD: number;
+  tokens: number;
 }
 
 export function perProblemBars(maxBars = 48): ProblemBar[] {
@@ -189,18 +173,14 @@ export function perProblemBars(maxBars = 48): ProblemBar[] {
       scans: 0,
       input: 0,
       output: 0,
-      inputCostUSD: 0,
-      outputCostUSD: 0,
-      costUSD: 0,
+      tokens: 0,
     };
     for (const s of slice) {
       col.scans += s.scans;
       col.input += s.input;
       col.output += s.output;
-      col.inputCostUSD += s.inputCostUSD;
-      col.outputCostUSD += s.outputCostUSD;
     }
-    col.costUSD = col.inputCostUSD + col.outputCostUSD;
+    col.tokens = col.input + col.output;
     out.push(col);
   }
   return out;
@@ -208,15 +188,13 @@ export function perProblemBars(maxBars = 48): ProblemBar[] {
 
 const DAY = 86_400_000;
 
-// Cost over time, one bucket per calendar day, capped to the most recent `maxDays`
+// Tokens over time, one bucket per calendar day, capped to the most recent `maxDays`
 // active days. Unlike per-problem this stays bounded however many problems you do.
 export interface DayStat {
   day: number; // floor(ts / DAY)
   input: number;
   output: number;
-  inputCostUSD: number;
-  outputCostUSD: number;
-  costUSD: number;
+  tokens: number;
   scans: number;
 }
 
@@ -226,32 +204,30 @@ export function perDay(maxDays = 30): DayStat[] {
     const day = Math.floor((r.ts ?? 0) / DAY);
     let s = byDay.get(day);
     if (!s) {
-      s = { day, input: 0, output: 0, inputCostUSD: 0, outputCostUSD: 0, costUSD: 0, scans: 0 };
+      s = { day, input: 0, output: 0, tokens: 0, scans: 0 };
       byDay.set(day, s);
     }
-    const info = modelInfo(recModel(r));
-    // Same scan semantics as perPage: lesson cards and drills cost money but are not scans.
+    // Same scan semantics as perPage: lesson cards and drills read and write tokens but
+    // are not scans.
     const role = recRole(r);
     if (role !== 'lesson' && role !== 'drill') s.scans += 1;
     s.input += r.input;
     s.output += r.output;
-    s.inputCostUSD += inputCostUSD(r, info);
-    s.outputCostUSD += (r.output * info.out) / 1e6;
   }
   const out = [...byDay.values()].sort((a, b) => a.day - b.day);
-  for (const s of out) s.costUSD = s.inputCostUSD + s.outputCostUSD;
+  for (const s of out) s.tokens = s.input + s.output;
   return out.slice(-maxDays);
 }
 
-// Cost split by purpose (solve / verify / confirm / classify / lesson card), so the
-// dashboard can show where the money actually goes and surface the lesson-card spend.
+// Split by purpose (solve / verify / confirm / hint / lesson card), so the dashboard can
+// show where the reading and the writing actually go, and surface what the deck costs.
 export interface RoleStat {
   role: Role;
   label: string;
   count: number;
   input: number;
   output: number;
-  costUSD: number;
+  tokens: number;
 }
 
 export function byRole(): RoleStat[] {
@@ -260,39 +236,41 @@ export function byRole(): RoleStat[] {
     const role = recRole(r);
     let s = m.get(role);
     if (!s) {
-      s = { role, label: ROLE_LABEL[role] ?? role, count: 0, input: 0, output: 0, costUSD: 0 };
+      s = { role, label: ROLE_LABEL[role] ?? role, count: 0, input: 0, output: 0, tokens: 0 };
       m.set(role, s);
     }
-    const info = modelInfo(recModel(r));
     s.count += 1;
     s.input += r.input;
     s.output += r.output;
-    s.costUSD += inputCostUSD(r, info) + (r.output * info.out) / 1e6;
+    s.tokens += tokensOf(r);
   }
-  return [...m.values()].sort((a, b) => b.costUSD - a.costUSD);
+  return [...m.values()].sort((a, b) => b.tokens - a.tokens);
 }
 
 export interface ModelStat {
   model: string;
   label: string;
   count: number;
-  costUSD: number;
+  input: number;
+  output: number;
+  tokens: number;
 }
 
 export function byModel(): ModelStat[] {
   const m = new Map<string, ModelStat>();
   for (const r of usage.records) {
     const model = recModel(r);
-    const info = modelInfo(model);
     let s = m.get(model);
     if (!s) {
-      s = { model, label: info.label, count: 0, costUSD: 0 };
+      s = { model, label: modelLabel(model), count: 0, input: 0, output: 0, tokens: 0 };
       m.set(model, s);
     }
     s.count += 1;
-    s.costUSD += inputCostUSD(r, info) + (r.output * info.out) / 1e6;
+    s.input += r.input;
+    s.output += r.output;
+    s.tokens += tokensOf(r);
   }
-  return [...m.values()].sort((a, b) => b.costUSD - a.costUSD);
+  return [...m.values()].sort((a, b) => b.tokens - a.tokens);
 }
 
 export function usageSummary() {
@@ -300,21 +278,17 @@ export function usageSummary() {
   let output = 0;
   let solves = 0;
   let verifies = 0;
-  let cost = 0;
   let lessonCount = 0;
-  let lessonCost = 0;
+  let lessonTokens = 0;
   for (const r of usage.records) {
-    const info = modelInfo(recModel(r));
     const role = recRole(r);
     input += r.input;
     output += r.output;
     if (role === 'solve') solves += 1;
     else if (role !== 'lesson' && role !== 'drill') verifies += 1;
-    const c = inputCostUSD(r, info) + (r.output * info.out) / 1e6;
-    cost += c;
     if (role === 'lesson') {
       lessonCount += 1;
-      lessonCost += c;
+      lessonTokens += tokensOf(r);
     }
   }
   const scans = usage.records.filter((r) => {
@@ -328,9 +302,8 @@ export function usageSummary() {
     totals: { input, output, solves, verifies },
     tokensTotal: input + output,
     tokensPerScan: scans ? Math.round((input + output) / scans) : 0,
-    estCostUSD: +cost.toFixed(4),
-    costPerPageUSD: +(cost / pages).toFixed(4),
-    lessons: { count: lessonCount, costUSD: +lessonCost.toFixed(4) },
+    tokensPerPage: Math.round((input + output) / pages),
+    lessons: { count: lessonCount, tokens: lessonTokens },
   };
 }
 

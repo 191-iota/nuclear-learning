@@ -771,8 +771,6 @@ async function runTranscription(images: string[]): Promise<Transcription | null>
       role: 'note',
       input: u.prompt_tokens ?? 0,
       output: u.completion_tokens ?? 0,
-      cacheRead: u.prompt_tokens_details?.cached_tokens ?? 0,
-      cacheCreate: 0,
     });
     const parsed = JSON.parse((resp.choices?.[0]?.message?.content ?? '').trim()) as {
       transcript?: string;
@@ -886,10 +884,10 @@ export async function suggestTitle(id: string): Promise<string> {
   const body = [n.context.trim(), n.text.trim()].filter(Boolean).join('\n\n').slice(0, 4000);
   if (!body) return '';
   try {
-    const model = settings.api.backgroundModel || 'gpt-5.4-mini';
+    const model = settings.api.backgroundModel || 'gemma4:e4b';
     const params: any = {
       model,
-      max_completion_tokens: 2000, // a title is ten tokens; the rest is the model's own thinking
+      max_completion_tokens: 2000, // a title is ten tokens; the rest is room to be wrong in
       messages: [
         { role: 'system', content: TITLE_SYSTEM },
         { role: 'user', content: body },
@@ -899,7 +897,7 @@ export async function suggestTitle(id: string): Promise<string> {
         json_schema: { name: 'note_title', strict: true, schema: TITLE_SCHEMA },
       },
     };
-    if (modelInfo(model).effort) params.reasoning_effort = 'low';
+    if (modelInfo(model).effort) params.reasoning_effort = 'none';
     const resp = await createCompletion(params, { timeout: 45000, lane: 'background' });
     const u = (resp as any)?.usage ?? {};
     recordUsage({
@@ -908,8 +906,6 @@ export async function suggestTitle(id: string): Promise<string> {
       role: 'note',
       input: u.prompt_tokens ?? 0,
       output: u.completion_tokens ?? 0,
-      cacheRead: u.prompt_tokens_details?.cached_tokens ?? 0,
-      cacheCreate: 0,
     });
     const parsed = JSON.parse((resp.choices?.[0]?.message?.content ?? '').trim()) as { title?: string };
     const title = cleanText(parsed.title).trim().slice(0, 80);

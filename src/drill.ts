@@ -8,13 +8,14 @@ import { settings } from '@/stores/settings';
  * progression loop: the estimator knows the weakest skill and the ideal difficulty
  * (about 4-in-5 success, hard enough to stretch, not to stall — the deliberate-practice
  * band), but until now it could only NAME the skill; the learner still had to go find a
- * matching problem. One cheap text-only gpt-5.4-mini call turns the recommendation into an
+ * matching problem. One text-only call on the background model turns the recommendation into an
  * actual problem to copy onto paper, where the normal grading loop takes over.
  */
-// The cheap text-only helpers (lesson card, drill, archive index) share one
-// background model, set in Presets (`api.backgroundModel`). Their reasoning efforts
-// stay per-job below, since each is tuned to the work rather than to the tier.
-const backgroundModel = (): string => settings.api.backgroundModel || 'gpt-5.4-mini';
+// The text-only helpers (lesson card, drill, archive index) share one background
+// model, set in Presets (`api.backgroundModel`), and all three ask for no thinking.
+// There is one model on one machine: a helper that stops to think holds the slot the
+// next page needs, and none of these three is worth a page of silence.
+const backgroundModel = (): string => settings.api.backgroundModel || 'gemma4:e4b';
 
 const DRILL_SCHEMA = {
   type: 'object',
@@ -54,7 +55,7 @@ export async function generateDrill(skillId: string, masteryPct: number): Promis
         // Reasoning tokens count against this budget; headroom so a fiddly clean-numbers
         // search can never truncate the JSON.
         max_completion_tokens: 4000,
-        reasoning_effort: 'medium',
+        reasoning_effort: 'none',
         messages: [
           { role: 'system', content: SYSTEM },
           { role: 'user', content: user },
@@ -73,8 +74,6 @@ export async function generateDrill(skillId: string, masteryPct: number): Promis
       role: 'drill',
       input: u.prompt_tokens ?? 0,
       output: u.completion_tokens ?? 0,
-      cacheRead: u.prompt_tokens_details?.cached_tokens ?? 0,
-      cacheCreate: 0,
     });
     const out = (resp.choices?.[0]?.message?.content ?? '').trim();
     const p = JSON.parse(out) as { task?: string; problem?: string };

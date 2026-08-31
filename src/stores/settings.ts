@@ -21,7 +21,16 @@ export type Settings = typeof defaults;
 // field or a whole section that only exists in the new defaults survives the merge
 // untouched. A purely additive change needs no bump, and bumping for one would throw
 // away every value the user had tuned to buy nothing.
-const KEY = 'nl.settings.v26';
+// (v27, 2026-08-24: every request now goes to Ollama on this machine, so every model id
+// in the api section is a local one and a saved copy naming a hosted model would send
+// the whole app at a server that is not there. The efforts go with them: on a local
+// Gemma any effort other than 'none' turns thinking on, which costs about five times the
+// wall clock per page. maxTokens drops from 32000 to 8000, which is still far more than
+// a solution checklist needs and now actually holds, since the ceiling is sent as
+// max_tokens as well. v28 the same day: the chat and the note question window think
+// again, because that is where deliberation is worth waiting for; the pad's own Ask
+// never stopped, and the transcriber stays off, where thinking measured worse.)
+const KEY = 'nl.settings.v28';
 
 // The ink the shipped default used to be. A saved copy holding it follows the new one
 // below, and the pictures already on disk were drawn with it (see inkOnDisk).

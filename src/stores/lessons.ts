@@ -28,7 +28,7 @@ export interface Lesson {
   // `mistake`.
   wrong?: string;
   right?: string;
-  // Tailored review card written by a dedicated gpt-5.4-mini call (see lessonCard.ts):
+  // Tailored review card written by a dedicated background call (see lessonCard.ts):
   // `front` is a specific recall question, `back` the answer, both with math in LaTeX.
   // Optional; cards captured before this, or when the call failed, fall back to the
   // correction / hint. `regenerateCards()` backfills them.
@@ -298,7 +298,7 @@ export function dueLessons(now = nowTick()): Lesson[] {
 }
 
 /**
- * Backfill tailored cards onto stored lessons by calling the gpt-5.4-mini card writer for
+ * Backfill tailored cards onto stored lessons by calling the background card writer for
  * each one. By default it only touches lessons without a `front` (the old cards), so
  * it is cheap and safe to run repeatedly; pass `force` to rewrite every card. Runs
  * sequentially and persists after each so progress is never lost. Returns how many it

@@ -51,10 +51,11 @@ export const archiveStore = reactive({
 export const practiceText = ref('');
 
 const COL = 'archive';
-// The cheap text-only helpers (lesson card, drill, archive index) share one
-// background model, set in Presets (`api.backgroundModel`). Their reasoning efforts
-// stay per-job below, since each is tuned to the work rather than to the tier.
-const backgroundModel = (): string => settings.api.backgroundModel || 'gpt-5.4-mini';
+// The text-only helpers (lesson card, drill, archive index) share one background
+// model, set in Presets (`api.backgroundModel`), and all three ask for no thinking.
+// There is one model on one machine: a helper that stops to think holds the slot the
+// next page needs, and none of these three is worth a page of silence.
+const backgroundModel = (): string => settings.api.backgroundModel || 'gemma4:e4b';
 const MAX_AUTO_REINDEX = 8; // per session, so a broken corpus cannot burn tokens forever
 const MIGRATED_KEY = 'nl.archive.migratedToDisk';
 
@@ -288,7 +289,7 @@ export async function indexAufgabe(id: string): Promise<boolean> {
       {
         model: backgroundModel(),
         max_completion_tokens: 3000,
-        reasoning_effort: 'low',
+        reasoning_effort: 'none',
         messages: [
           { role: 'system', content: INDEX_SYSTEM },
           { role: 'user', content },
@@ -307,8 +308,6 @@ export async function indexAufgabe(id: string): Promise<boolean> {
       role: 'index',
       input: u.prompt_tokens ?? 0,
       output: u.completion_tokens ?? 0,
-      cacheRead: u.prompt_tokens_details?.cached_tokens ?? 0,
-      cacheCreate: 0,
     });
     const out = (resp.choices?.[0]?.message?.content ?? '').trim();
     const parsed = JSON.parse(out) as {

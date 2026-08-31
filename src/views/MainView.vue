@@ -316,7 +316,7 @@ async function runButton(
     await op(surface.value.exportImage(), stale);
     status.value = '';
   } catch (err: any) {
-    status.value = stale() ? '' : (err?.message ?? 'Error contacting OpenAI.');
+    status.value = stale() ? '' : (err?.message ?? 'Error contacting the local model.');
   } finally {
     busy.value = false;
   }
