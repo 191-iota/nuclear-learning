@@ -132,14 +132,17 @@ const CLUSTER_GAP = 120;
 // The width the pen has to keep in the finished image. Under a whole pixel a stroke
 // is drawn as a partial-coverage grey and the transcriber starts guessing at letters.
 const MIN_PEN_PX = 1;
-// Ceiling on images per note. A note is one thing a learner wrote, so a request that
-// wants dozens of pictures of it has stopped being a transcription. A board far past
-// what this many budget-sized tiles can hold is scaled down inside its tiles like
-// before, since at that size no bounded number of images keeps every stroke sharp.
-const MAX_TILES = 12;
-// Cells are grown slightly past their share so a glyph split by a seam survives whole
-// in the neighbour.
-const TILE_OVERLAP = 0.05;
+// Ceiling on tiles per note. Each tile is now its own request, read on its own, so
+// this is a ceiling on how long a note takes rather than on how much one request can
+// hold: twelve was tuned for a single request carrying every picture, and it forced a
+// board of twenty-odd pages into twelve tiles that each drew the pen at half a pixel.
+// A note past this is still scaled down inside its tiles, because at that size no
+// bounded number of images keeps every stroke sharp.
+const MAX_TILES = 32;
+// How far a cut may be moved to land on empty board, as a share of the cell it splits.
+// A quarter of a cell reaches past the tallest line of writing and stops well short of
+// handing a cut to a different paragraph than the one it belongs to.
+const SNAP_WINDOW = 0.25;
 
 // ---- rendering ----
 
@@ -272,6 +275,17 @@ export function imageCorners(im: TabletImage): { x: number; y: number }[] {
     [hw, hh],
     [-hw, hh],
   ].map(([dx, dy]) => ({ x: im.x + dx * cos - dy * sin, y: im.y + dx * sin + dy * cos }));
+}
+
+/** A picture's extent in page space, so the reader can place it among the ink. */
+export function imageBox(im: TabletImage): InkBox {
+  const c = imageCorners(im);
+  return {
+    minX: Math.min(...c.map((p) => p.x)),
+    minY: Math.min(...c.map((p) => p.y)),
+    maxX: Math.max(...c.map((p) => p.x)),
+    maxY: Math.max(...c.map((p) => p.y)),
+  };
 }
 
 export function drawImages(
@@ -509,24 +523,93 @@ export function clusterStrokes(list: TabletStroke[], gap = CLUSTER_GAP): TabletS
 }
 
 /**
- * The order a reader would take them in: down the page, and left to right across
- * anything that sits at the same height. Regions whose vertical spans overlap are one
- * band, so two columns of a side-by-side derivation read across rather than the left
- * column being read to the bottom first.
+ * Neighbours folded together while one image can still hold them legibly.
+ *
+ * Clustering answers "what sits together", and it answers it strictly: a page number, a
+ * lone equals sign, a dot the pen left in the margin all come back as regions of their
+ * own. Each of those used to be a tile, and a tile is now a whole request, so a board of
+ * twenty pages was spending four of its thirty requests on pictures of a single stroke.
+ *
+ * Two tests, and a fold needs both. It must cost no extra tile (the union asks for no
+ * more cells than the larger of the two already did), so absorbing a stray mark into the
+ * page it was written beside is free while gluing two full pages together is refused.
+ * And the union must be mostly writing rather than mostly board, or two scraps a page
+ * apart would fold into one tall sliver holding two dots and nothing else.
  */
-function readingOrder(boxes: InkBox[]): InkBox[] {
-  const byTop = [...boxes].sort((a, b) => a.minY - b.minY);
-  const bands: { bottom: number; items: InkBox[] }[] = [];
-  for (const b of byTop) {
-    const band = bands[bands.length - 1];
-    if (band && b.minY <= band.bottom) {
-      band.items.push(b);
-      band.bottom = Math.max(band.bottom, b.maxY);
+function mergeLegibleNeighbours(groups: TabletStroke[][]): TabletStroke[][] {
+  if (groups.length < 2) return groups;
+  const sorted = inReadingOrder(
+    groups.map((g) => ({ g, box: pad(strokeBounds(g) as InkBox, EXPORT_MARGIN) })),
+  );
+  const out: { g: TabletStroke[]; box: InkBox }[] = [];
+  for (const next of sorted) {
+    const cur = out[out.length - 1];
+    const union = cur ? unionBox(cur.box, next.box) : null;
+    if (cur && union && free(union, cur.box, next.box) && solid(union, cur.box, next.box)) {
+      cur.g = cur.g.concat(next.g);
+      cur.box = union;
     } else {
-      bands.push({ bottom: b.maxY, items: [b] });
+      out.push({ g: next.g, box: next.box });
     }
   }
-  return bands.flatMap((band) => band.items.sort((a, b) => a.minX - b.minX));
+  return out.map((x) => x.g);
+}
+
+/** The fold asks for no more images than the two parts already did. */
+function free(union: InkBox, a: InkBox, b: InkBox): boolean {
+  return cellsNeeded(union) <= Math.max(cellsNeeded(a), cellsNeeded(b));
+}
+
+/** The fold does not turn two small marks into one big picture of empty board. */
+function solid(union: InkBox, a: InkBox, b: InkBox): boolean {
+  return area(union) <= 3 * Math.max(area(a), area(b));
+}
+
+function area(b: InkBox): number {
+  return Math.max(1, b.maxX - b.minX) * Math.max(1, b.maxY - b.minY);
+}
+
+function unionBox(a: InkBox, b: InkBox): InkBox {
+  return {
+    minX: Math.min(a.minX, b.minX),
+    minY: Math.min(a.minY, b.minY),
+    maxX: Math.max(a.maxX, b.maxX),
+    maxY: Math.max(a.maxY, b.maxY),
+  };
+}
+
+/**
+ * The order a reader would take them in: down the page, and left to right across
+ * anything that sits at the same height. Regions that genuinely share a height are one
+ * band, so two columns of a side-by-side derivation read across rather than the left
+ * column being read to the bottom first.
+ *
+ * "Share a height" has to mean most of a height. Touching by a hair does not: a tall
+ * board of stacked working had a region reach 28 units into the one below it, which was
+ * enough to band the two together, sort them left to right, and hand the transcriber the
+ * second page of a note before its first. So a box joins the band it is under only when
+ * it overlaps by more than half the shorter of the two, which no stacked pair does and
+ * every real column pair does.
+ */
+export function inReadingOrder<T extends { box: InkBox }>(items: T[]): T[] {
+  const byTop = [...items].sort((a, b) => a.box.minY - b.box.minY);
+  const bands: { top: number; bottom: number; items: T[] }[] = [];
+  for (const it of byTop) {
+    const band = bands[bands.length - 1];
+    const share = band ? Math.min(band.bottom, it.box.maxY) - Math.max(band.top, it.box.minY) : 0;
+    const shorter = band ? Math.min(band.bottom - band.top, it.box.maxY - it.box.minY) : 0;
+    if (band && share > shorter / 2) {
+      band.items.push(it);
+      band.bottom = Math.max(band.bottom, it.box.maxY);
+    } else {
+      bands.push({ top: it.box.minY, bottom: it.box.maxY, items: [it] });
+    }
+  }
+  return bands.flatMap((band) => band.items.sort((a, b) => a.box.minX - b.box.minX));
+}
+
+function readingOrder(boxes: InkBox[]): InkBox[] {
+  return inReadingOrder(boxes.map((box) => ({ box }))).map((x) => x.box);
 }
 
 /** The configured pen, clamped to what a pen can sensibly be. The tile planner needs
@@ -552,11 +635,7 @@ function cellsNeeded(b: InkBox): number {
   const h = Math.max(1, b.maxY - b.minY);
   if (tileScale(w, h) * baseWidth() >= MIN_PEN_PX) return 1;
   const wanted = MIN_PEN_PX / baseWidth();
-  // Each cell is grown on both sides for the seam overlap, so it carries more than its
-  // plain share of the area. Counting the cells without that would hand every cell a
-  // region slightly too big for the budget and land the pen just under the floor.
-  const grow = (1 + 2 * TILE_OVERLAP) ** 2;
-  return Math.max(1, Math.ceil((w * h * grow) / (BUDGET_PX / (wanted * wanted))));
+  return Math.max(1, Math.ceil((w * h) / (BUDGET_PX / (wanted * wanted))));
 }
 
 /**
@@ -580,28 +659,85 @@ function gridFor(w: number, h: number, cells: number): { cols: number; rows: num
   return best;
 }
 
-/** A region cut into at most `cells` overlapping pieces. */
-function splitBox(b: InkBox, cells: number): InkBox[] {
+/**
+ * A region cut into at most `cells` pieces that touch and never overlap.
+ *
+ * They used to be grown past their share so a glyph on a seam survived whole in the
+ * neighbour, which was the right trade while every piece rode in one request and the
+ * model was told to write a repeated line once. Each piece is its own request now, and
+ * two requests cannot agree with each other, so ink shared between neighbours comes back
+ * as a line transcribed twice. The seam is kept clean instead of covered twice: every
+ * cut is pulled to the nearest run of empty board, which on a page of writing is the
+ * space between two lines.
+ */
+function splitBox(b: InkBox, cells: number, ink: TabletStroke[]): InkBox[] {
   if (cells <= 1) return [b];
   const w = Math.max(1, b.maxX - b.minX);
   const h = Math.max(1, b.maxY - b.minY);
   const { cols, rows } = gridFor(w, h, cells);
-  const cw = w / cols;
-  const ch = h / rows;
-  const ox = cw * TILE_OVERLAP;
-  const oy = ch * TILE_OVERLAP;
+  const xs = cutLines(b.minX, w, cols, ink, 'x');
+  const ys = cutLines(b.minY, h, rows, ink, 'y');
   const out: InkBox[] = [];
   for (let r = 0; r < rows; r += 1) {
     for (let c = 0; c < cols; c += 1) {
-      out.push({
-        minX: Math.max(b.minX, b.minX + c * cw - ox),
-        minY: Math.max(b.minY, b.minY + r * ch - oy),
-        maxX: Math.min(b.maxX, b.minX + (c + 1) * cw + ox),
-        maxY: Math.min(b.maxY, b.minY + (r + 1) * ch + oy),
-      });
+      out.push({ minX: xs[c], minY: ys[r], maxX: xs[c + 1], maxY: ys[r + 1] });
     }
   }
   return out;
+}
+
+/** The `n + 1` edges of an even split, every inner one snapped to empty board. The
+ *  outer two are the region's own edges and never move. */
+function cutLines(start: number, span: number, n: number, ink: TabletStroke[], axis: 'x' | 'y'): number[] {
+  const out = [start];
+  for (let i = 1; i < n; i += 1) {
+    const at = start + (span * i) / n;
+    const moved = snapCut(at, (span / n) * SNAP_WINDOW, ink, axis);
+    // A snapped cut that crossed its neighbour would hand a tile a negative height.
+    out.push(Math.max(moved, out[out.length - 1]));
+  }
+  out.push(start + span);
+  return out;
+}
+
+/**
+ * The best place to cut near `at`: the middle of the widest stretch of board with no ink
+ * on it, within one window either side. A wide gap wins over a near one, because a
+ * hand's width of empty board is a break between two thoughts while the sliver between
+ * two words is not a place to end a page. When ink covers the whole window (a long
+ * vertical rule, a bracket down the margin) nothing scores and the even cut stands.
+ */
+function snapCut(at: number, window: number, ink: TabletStroke[], axis: 'x' | 'y'): number {
+  const lo = at - window;
+  const hi = at + window;
+  const spans = ink
+    .map((s): [number, number] => (axis === 'y' ? [s.minY, s.maxY] : [s.minX, s.maxX]))
+    .filter(([a, b]) => b >= lo && a <= hi)
+    .sort((p, q) => p[0] - q[0]);
+  const solid: [number, number][] = [];
+  for (const [a, b] of spans) {
+    const last = solid[solid.length - 1];
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b);
+    else solid.push([a, b]);
+  }
+  let best = at;
+  let score = -Infinity;
+  let cur = lo;
+  const consider = (a: number, b: number): void => {
+    if (b <= a) return;
+    const mid = (a + b) / 2;
+    const s = b - a - Math.abs(mid - at) / 2;
+    if (s > score) {
+      score = s;
+      best = mid;
+    }
+  };
+  for (const [a, b] of solid) {
+    consider(cur, Math.min(a, hi));
+    cur = Math.max(cur, b);
+  }
+  consider(cur, hi);
+  return best;
 }
 
 // ---- export ----
@@ -619,7 +755,7 @@ export function planInkTiles(list: TabletStroke[], zone: 'main' | 'all' = 'all')
   const ink = inkFor(list, zone);
   if (ink.length === 0) return [];
 
-  let groups = clusterStrokes(ink);
+  let groups = mergeLegibleNeighbours(clusterStrokes(ink));
 
   // More regions than we will send: fold neighbours together in reading order, so the
   // merging follows the page rather than the order strokes happened to be drawn in.
@@ -637,15 +773,15 @@ export function planInkTiles(list: TabletStroke[], zone: 'main' | 'all' = 'all')
   // one tile, and what is left of the ceiling goes to the biggest regions first, since
   // those are the ones whose ink would otherwise be scaled thinnest.
   const boxes = groups
-    .map((g) => pad(strokeBounds(g) as InkBox, EXPORT_MARGIN))
-    .map((box) => ({ box, want: cellsNeeded(box) }))
+    .map((g) => ({ g, box: pad(strokeBounds(g) as InkBox, EXPORT_MARGIN) }))
+    .map((x) => ({ ...x, want: cellsNeeded(x.box) }))
     .sort((a, b) => b.want - a.want);
   let spare = Math.max(0, MAX_TILES - boxes.length);
   const cut: InkBox[] = [];
-  for (const { box, want } of boxes) {
+  for (const { g, box, want } of boxes) {
     const take = Math.min(want - 1, spare);
     spare -= take;
-    cut.push(...splitBox(box, 1 + take));
+    cut.push(...splitBox(box, 1 + take, g));
   }
 
   return readingOrder(cut);

@@ -709,7 +709,8 @@ async function refreshPageText(): Promise<void> {
   noteAskStore.reading = true;
   try {
     const rev = ink.state.rev;
-    const text = await transcribeStrokes(ink.getStrokes());
+    // The newest few regions, not the whole term: see transcribeStrokes.
+    const text = await transcribeStrokes(ink.getStrokes(), 4);
     if (text) {
       pageText.value = text;
       pageRev.value = rev;
@@ -1261,6 +1262,13 @@ function onDeleteNote(): void {
   open.value = null;
 }
 
+/** "Transcribing…" while a page is read, "Transcribing 3/12…" while a board is read
+ *  region by region, so a two-minute read visibly moves. */
+function readingLabel(id: string): string {
+  const at = notesStore.reading[id];
+  return at ? `Transcribing ${at}…` : 'Transcribing…';
+}
+
 async function onReExtract(): Promise<void> {
   const n = open.value;
   if (!n || busyExtract.value) return;
@@ -1564,7 +1572,9 @@ function fmtClock(ts: number): string {
               <span v-if="n.draft" class="npending" title="Saved as you wrote it. Open it, continue writing, and Save reads it into text.">
                 · draft</span
               >
-              <span v-else-if="n.hasImage && !n.extracted" class="npending"> · transcribing…</span>
+              <span v-else-if="n.hasImage && !n.extracted" class="npending">
+                · transcribing<template v-if="notesStore.reading[n.id]"> {{ notesStore.reading[n.id] }}</template>…
+              </span>
             </span>
             <span v-if="n.tags.length" class="ntags">
               <span v-for="t in n.tags" :key="t" class="tag">{{ t }}</span>
@@ -1897,7 +1907,7 @@ function fmtClock(ts: number): string {
             title="Transcribe the image again (overwrites the transcript and tags; your title stays)"
             @click="onReExtract"
           >
-            {{ busyExtract ? 'Transcribing…' : 'Re-transcribe' }}
+            {{ busyExtract ? readingLabel(open.id) : 'Re-transcribe' }}
           </button>
           <label class="toggle pin-toggle">
             <input

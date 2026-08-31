@@ -5,7 +5,13 @@ import { recordUsage } from '@/stores/usage';
 import { blobGet, blobPut, colDelete, colList, colPut, dbState } from '@/db';
 import { settings } from '@/stores/settings';
 import { makeThumb } from '@/stores/archive';
-import { exportInkTiles, type TabletStroke } from '@/composables/inkExport';
+import {
+  exportInkTiles,
+  imageBox,
+  inReadingOrder,
+  type TabletImage,
+  type TabletStroke,
+} from '@/composables/inkExport';
 
 /**
  * Notes: a personal notebook beside the math loop, on the conventions real note
@@ -105,15 +111,24 @@ export const INBOX_ID = 'inbox';
 const NOTES_COL = 'notes';
 const FOLDERS_COL = 'notefolders';
 // The transcriber is the one background model worth choosing deliberately: it reads
-// handwriting, so a cheaper tier shows up as misread words rather than as a slower
-// answer. Picked in Presets (`api.noteModel`), defaulting to the cheapest capable one.
-const extractModel = (): string => settings.api.noteModel || 'gpt-5.4-mini';
+// handwriting, so a weaker one shows up as misread words rather than as a slower answer.
+// Picked in Presets (`api.noteModel`), defaulting to the model that reads every other
+// page in the app. It asks for no thinking, and that is a measured choice rather than a
+// thrifty one: the same page came back in 7s against 35s, and the fast reading was the
+// accurate one (config/settings.json, api.noteEffort).
+const extractModel = (): string => settings.api.noteModel || 'gemma4:e4b';
 const MAX_AUTO_EXTRACT = 8; // failed extractions retried per session, bounded
 
 export const notesStore = reactive({
   folders: [] as NoteFolder[],
   notes: [] as Note[],
   ready: false,
+  /**
+   * Note id to "3/12" while a note is being read region by region. A board of twenty
+   * pages is a couple of minutes of requests, and a label that never moves for two
+   * minutes is indistinguishable from one that has died.
+   */
+  reading: {} as Record<string, string>,
 });
 
 function newId(): string {
@@ -703,24 +718,59 @@ export async function loadNoteImage(id: string): Promise<string> {
 
 // ---- the transcription pipeline (the "wrapper" that turns ink into ask-ready text) ----
 
-const EXTRACT_SCHEMA = {
+/**
+ * What every request about a picture of handwriting asks for, and why none of them ask
+ * for it as JSON.
+ *
+ * A transcript of handwritten mathematics is mostly backslashes, and a small model
+ * writing $\neq$ inside a JSON string does not escape it. JSON.parse then reads \n as a
+ * newline and leaves "eq" behind, \frac as a form feed and "rac", \begin as a backspace
+ * and "egin". A whole page of algebra came back shredded that way while looking, line by
+ * line, like it had been read correctly. So the transcript is asked for as itself: it is
+ * the entire answer, nothing about it needs a wrapper, and nothing has to survive an
+ * escaping round trip.
+ *
+ * What a note needs on top of its text (a name to offer, tags, the language) is asked
+ * for afterwards by describeNote, where the answer is a few plain words and a schema
+ * costs nothing.
+ */
+const TRANSCRIBE_RULES = `- Preserve the structure: line breaks, bullets, numbering, headings.
+- Write every mathematical expression in $-LaTeX between single $ delimiters.
+- Mark genuinely unreadable spots as [?].
+- Never summarize, never translate, never add anything that is not written.
+- Reply with the transcription and nothing else: no preamble, no commentary, no code fence, no JSON.`;
+
+const PAGE_SYSTEM = `You transcribe handwriting. The image is ONE handwritten note, which may be about anything (mathematics, code, ideas, plans, lists) and stays in its own language.
+
+${TRANSCRIBE_RULES}`;
+
+/**
+ * A note too big to stay legible in one picture is cut into regions that do not overlap
+ * and read one request per region, in reading order. Each request sees exactly one
+ * region and is told to stay inside it, which is the other half of the repair: a small
+ * local model handed twelve pictures in one request stops transcribing a page and starts
+ * producing something that merely looks like notes.
+ */
+const REGION_SYSTEM = `You transcribe handwriting. The image is ONE REGION of a handwritten note, which was cut top to bottom into regions that do not overlap. Every other region is transcribed by its own separate request, and the note stays in its own language.
+
+Transcribe all of THIS image and nothing beyond it. Do not guess at what came before this region or after it, and do not repeat a heading that is not on this image. A line the cut caught part-way through is transcribed as far as you can read it, with [?] for the rest.
+
+${TRANSCRIBE_RULES}`;
+
+const DESCRIBE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['transcript', 'title', 'tags', 'language'],
+  required: ['title', 'tags', 'language'],
   properties: {
-    transcript: { type: 'string' },
     title: { type: 'string' },
     tags: { type: 'array', items: { type: 'string' } },
     language: { type: 'string' },
   },
 };
 
-const EXTRACT_SYSTEM = `You transcribe ONE handwritten note into a personal knowledge base. The note may be about anything — mathematics, code, ideas, plans, lists — and stays in its own language.
-
-A note may arrive as SEVERAL images. They are regions of one writing surface, given in reading order, and neighbouring regions overlap slightly so nothing is lost at a seam. Read them as one continuous note in the order given, and write anything that appears in two regions only once.
+const DESCRIBE_SYSTEM = `You are given the transcript of ONE handwritten note, as it was just read off the page. Describe it for a personal knowledge base.
 
 Return JSON:
-- "transcript": the faithful transcription. Preserve the note's structure (line breaks, bullets, numbering, headings); write every mathematical expression in $-LaTeX between single $ delimiters; mark genuinely unreadable spots as [?]. Never summarize, never translate, never add content that is not written.
 - "title": a name for this note, at most 60 characters, in the note's own language. Say what is ON the page as concretely as the page allows ("Grenzwerte: Sandwich-Satz mit Beispielen"), and take the note's own heading when it has one. No date, no filler ("Notizen zu ..."), no trailing punctuation. It is offered to the student, who decides whether to use it.
 - "tags": 3 to 8 lowercase tags a searcher would type, in the note's language plus obvious English equivalents, no duplicates.
 - "language": the note's main language as a two-letter code ("de", "en").`;
@@ -734,81 +784,164 @@ function decodeImage(imageDataUrl: string): { data: string; mediaType: string } 
 }
 
 /**
- * The pictures the transcriber is given. A note written on the board can cover more
- * surface than one image carries legibly, so its stored strokes are re-rendered as
- * per-region tiles: the ink comes back at full pen weight and the empty board between
- * regions is never sent at all. A page-sized note yields a single tile and is exactly
- * the one-image request it always was.
+ * The pictures the transcriber is given, in the order a reader would take them.
+ *
+ * A note written on the board can cover more surface than one image carries legibly, so
+ * its stored strokes are re-rendered as per-region tiles: the ink comes back at full pen
+ * weight and the empty board between regions is never sent at all. A page-sized note
+ * yields a single tile and is exactly the one-image request it always was.
+ *
+ * A screenshot pasted onto the board goes in as its own region, at the size it was
+ * pasted at, and takes its place among the ink by where it sits on the page. That is
+ * usually the half that matters: a page of worked answers whose questions are pasted
+ * above them transcribed as answers to nothing at all, because the tiles are drawn from
+ * strokes and a picture has none. Sending it whole rather than redrawn also keeps
+ * printed text as sharp as it arrived.
  *
  * Two kinds of note keep their stored image instead. One with a backdrop has a raster
  * layer under the ink that redrawing strokes cannot reproduce, and one without stored
- * strokes (a pasted screenshot, or a capture from before ink was persisted) has no
- * strokes to redraw. Both are page-sized by construction, so nothing is lost.
+ * strokes (a pasted screenshot on its own, or a capture from before ink was persisted)
+ * has no strokes to redraw. Both are page-sized by construction, so nothing is lost.
  */
 async function extractImages(n: Note): Promise<string[]> {
   if (n.hasInk && !n.hasBg) {
     const strokes = (await loadNoteInk(n.id)) as TabletStroke[] | null;
     if (strokes?.length) {
-      const tiles = exportInkTiles(strokes, 'all')
-        .map((t) => t.image)
-        .filter(Boolean);
-      if (tiles.length) return tiles;
+      const tiles = exportInkTiles(strokes, 'all').filter((t) => t.image);
+      const pics = n.hasImgs ? ((await loadNoteImages(n.id)) as TabletImage[] | null) ?? [] : [];
+      const regions = inReadingOrder([
+        ...tiles,
+        ...pics.filter((p) => p?.src).map((p) => ({ image: p.src, box: imageBox(p) })),
+      ]);
+      if (regions.length) return regions.map((r) => r.image);
     }
   }
   const image = await loadNoteImage(n.id);
   return image ? [image] : [];
 }
 
-interface Transcription {
-  transcript: string;
-  title: string;
-  tags: string[];
-  lang: string;
+/** A plain-text reply, with the code fence a chatty model sometimes wraps it in. */
+function unfence(s: string): string {
+  const t = s.trim();
+  const fenced = /^```[a-z]*\n([\s\S]*?)\n?```$/i.exec(t);
+  return (fenced ? fenced[1] : t).trim();
 }
 
 /**
- * One vision call over a set of region images, and the parsed result. Both readers go
- * through here: the note's own transcription, and the live read the question window
- * asks for. Splitting it out is what keeps those two the SAME reading, on the same
- * model, at the same cost, so an answer about the page is never based on a weaker look
- * at it than the note's transcript was.
- *
- * Returns null when the call or the parse failed, or when the page came back empty.
+ * One region, read as text. Returns null when the call failed, which the caller marks in
+ * the transcript rather than treating as the end of the note. An empty region is not a
+ * failure: a crop can legitimately hold nothing readable.
  */
-async function runTranscription(images: string[]): Promise<Transcription | null> {
+async function runRegion(image: string, index: number, total: number): Promise<string | null> {
+  const { data, mediaType } = decodeImage(image);
+  const text =
+    total > 1
+      ? `This is region ${index + 1} of ${total} of one note, in reading order. Transcribe only what is written in this image.`
+      : 'Transcribe this note.';
   try {
-    const many = images.length > 1;
-    const content: unknown[] = [
-      {
-        type: 'text',
-        text: many
-          ? `Transcribe this note. It is one writing surface in ${images.length} regions, in reading order.`
-          : 'Transcribe this note.',
-      },
-    ];
-    images.forEach((img, i) => {
-      const { data, mediaType } = decodeImage(img);
-      if (many) content.push({ type: 'text', text: `Region ${i + 1} of ${images.length}:` });
-      content.push({ type: 'image_url', image_url: { url: `data:${mediaType};base64,${data}` } });
-    });
     const model = extractModel();
     const resp = await createCompletion(
       {
         model,
-        // A board's worth of regions holds more writing than a page, so the ceiling and
-        // the patience for it both scale with how many were sent.
-        max_completion_tokens: Math.min(24000, 6000 + (images.length - 1) * 2000),
-        reasoning_effort: settings.api.noteEffort || 'low',
+        // One region is at most a page of writing, and the reply is that page as text.
+        max_completion_tokens: 6000,
+        reasoning_effort: settings.api.noteEffort || 'none',
         messages: [
-          { role: 'system', content: EXTRACT_SYSTEM },
-          { role: 'user', content },
+          { role: 'system', content: total > 1 ? REGION_SYSTEM : PAGE_SYSTEM },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text },
+              { type: 'image_url', image_url: { url: `data:${mediaType};base64,${data}` } },
+            ],
+          },
+        ],
+      },
+      { timeout: 120000, lane: 'background' },
+    );
+    const u = (resp as any)?.usage ?? {};
+    recordUsage({
+      mode: 'notes',
+      model,
+      role: 'note',
+      input: u.prompt_tokens ?? 0,
+      output: u.completion_tokens ?? 0,
+    });
+    return unfence(cleanText(resp.choices?.[0]?.message?.content ?? ''));
+  } catch (err) {
+    console.warn(`[nuclear-learning] region ${index + 1}/${total} failed:`, err);
+    return null;
+  }
+}
+
+/**
+ * Read a set of region images and hand back one transcript.
+ *
+ * The regions go out one request at a time, in reading order, and their transcripts are
+ * joined in that order. They used to ride in a single request as a dozen pictures with
+ * an instruction to read them as one continuous page, which a hosted model could do and
+ * this one cannot: a twenty-page board came back as a few real lines followed by dots
+ * and question marks, invented rather than read. One picture per request is the fix, and
+ * the reason the regions no longer overlap (inkExport): two requests cannot agree about
+ * a line they can both see, so a shared seam came back transcribed twice.
+ *
+ * A region that fails is skipped rather than fatal. Losing one page of twenty is worth
+ * far more than losing the other nineteen to it, and the gap is marked in the transcript
+ * so it never reads as writing that was never there.
+ *
+ * Both readers go through here: the note's own transcription, and the live read the
+ * question window asks for. That is what keeps those two the SAME reading, on the same
+ * model, so an answer about the page is never based on a weaker look at it.
+ */
+async function runTranscription(
+  images: string[],
+  onProgress?: (done: number, total: number) => void,
+): Promise<string> {
+  const total = images.length;
+  const parts: string[] = [];
+  let failed = 0;
+  for (let i = 0; i < total; i += 1) {
+    const out = await runRegion(images[i], i, total);
+    if (out === null) {
+      failed += 1;
+      if (total > 1) parts.push(`[region ${i + 1} of ${total} could not be read]`);
+    } else if (out) {
+      parts.push(out);
+    }
+    onProgress?.(i + 1, total);
+  }
+  if (failed === total) return '';
+  return parts.join('\n\n').trim();
+}
+
+/**
+ * The name, tags and language of a note, from the text that was just read off it. One
+ * small text call, no picture: the page has already been read, and reading it twice to
+ * learn what language it is in would double what a note costs to file.
+ *
+ * Failing here costs the note nothing but its tags: the transcript is already in hand.
+ */
+async function describeNote(text: string): Promise<{ title: string; tags: string[]; lang: string }> {
+  const empty = { title: '', tags: [] as string[], lang: '' };
+  const body = text.trim().slice(0, 4000);
+  if (!body) return empty;
+  try {
+    const model = settings.api.backgroundModel || 'gemma4:e4b';
+    const resp = await createCompletion(
+      {
+        model,
+        max_completion_tokens: 1000,
+        reasoning_effort: 'none',
+        messages: [
+          { role: 'system', content: DESCRIBE_SYSTEM },
+          { role: 'user', content: body },
         ],
         response_format: {
           type: 'json_schema',
-          json_schema: { name: 'note_extract', strict: true, schema: EXTRACT_SCHEMA },
+          json_schema: { name: 'note_describe', strict: true, schema: DESCRIBE_SCHEMA },
         },
       },
-      { timeout: Math.min(180000, 60000 + (images.length - 1) * 12000), lane: 'background' },
+      { timeout: 60000, lane: 'background' },
     );
     const u = (resp as any)?.usage ?? {};
     recordUsage({
@@ -819,15 +952,11 @@ async function runTranscription(images: string[]): Promise<Transcription | null>
       output: u.completion_tokens ?? 0,
     });
     const parsed = JSON.parse((resp.choices?.[0]?.message?.content ?? '').trim()) as {
-      transcript?: string;
       title?: string;
       tags?: unknown;
       language?: string;
     };
-    const transcript = cleanText(parsed.transcript).trim();
-    if (!transcript) return null;
     return {
-      transcript,
       title: cleanText(parsed.title).trim().slice(0, 80),
       tags: Array.isArray(parsed.tags)
         ? parsed.tags
@@ -839,8 +968,8 @@ async function runTranscription(images: string[]): Promise<Transcription | null>
       lang: typeof parsed.language === 'string' ? parsed.language.slice(0, 5) : '',
     };
   } catch (err) {
-    console.warn('[nuclear-learning] note transcription failed:', err);
-    return null;
+    console.warn('[nuclear-learning] describing a note failed:', err);
+    return empty;
   }
 }
 
@@ -851,17 +980,22 @@ export async function extractNote(id: string): Promise<boolean> {
   try {
     const images = await extractImages(n);
     if (!images.length) return false;
-    const out = await runTranscription(images);
-    if (!out) return false;
+    const transcript = await runTranscription(images, (done, total) => {
+      // Only a note that was cut up has anything to count; a single page says
+      // "transcribing" the way it always did.
+      if (total > 1) notesStore.reading[id] = `${done}/${total}`;
+    });
+    if (!transcript) return false;
+    const meta = await describeNote(transcript);
     // Hand-edited fields survive a re-extract; only the untouched ones fill in.
     // The title is never among them: it is the student's, and a transcription
     // landing minutes later must not rename a note they just named themselves.
     // The candidate is parked in titleHint, where the button in the note dialog can
     // hand it over for nothing.
-    if (out.title) n.titleHint = out.title;
-    if (!n.text) n.text = out.transcript;
-    if (!n.tags.length && out.tags.length) n.tags = out.tags;
-    if (out.lang) n.lang = out.lang;
+    if (meta.title) n.titleHint = meta.title;
+    if (!n.text) n.text = transcript;
+    if (!n.tags.length && meta.tags.length) n.tags = meta.tags;
+    if (meta.lang) n.lang = meta.lang;
     n.extracted = true;
     n.edited = Date.now();
     await persistNote(n);
@@ -871,6 +1005,8 @@ export async function extractNote(id: string): Promise<boolean> {
     // unhandled rejection rather than as a note that stayed untranscribed.
     console.warn('[nuclear-learning] transcribing a note failed:', err);
     return false;
+  } finally {
+    delete notesStore.reading[id];
   }
 }
 
@@ -881,16 +1017,36 @@ export async function extractNote(id: string): Promise<boolean> {
  * transcript; writing this into the note instead would overwrite a transcript the
  * student may have corrected by hand.
  *
+ * `maxRegions` is what keeps this usable on a board that has grown over a term. A note
+ * is read region by region, so a twenty-region board is a couple of minutes, and a
+ * question is not worth a couple of minutes of silence. Above the cap only the newest
+ * corner of the board is read: the region holding the most recent stroke and the ones
+ * above it, which is the working you were looking at when you typed the question. The
+ * full read still happens where it belongs, when the note is saved.
+ *
  * The caller caches the result against the board's revision, so this runs when the
  * page has actually changed and never once per question.
  */
-export async function transcribeStrokes(strokes: TabletStroke[]): Promise<string> {
-  const tiles = exportInkTiles(strokes, 'all')
-    .map((t) => t.image)
-    .filter(Boolean);
+export async function transcribeStrokes(
+  strokes: TabletStroke[],
+  maxRegions = 0,
+): Promise<string> {
+  const tiles = exportInkTiles(strokes, 'all').filter((t) => t.image);
   if (!tiles.length) return '';
-  const out = await runTranscription(tiles);
-  return out?.transcript ?? '';
+  let use = tiles;
+  if (maxRegions > 0 && tiles.length > maxRegions) {
+    const newest = strokes.reduce((a, b) => (b.id > a.id ? b : a), strokes[0]);
+    let at = tiles.findIndex(
+      (t) =>
+        newest.minX <= t.box.maxX &&
+        newest.maxX >= t.box.minX &&
+        newest.minY <= t.box.maxY &&
+        newest.maxY >= t.box.minY,
+    );
+    if (at < 0) at = tiles.length - 1;
+    use = tiles.slice(Math.max(0, at - (maxRegions - 1)), at + 1);
+  }
+  return runTranscription(use.map((t) => t.image));
 }
 
 // ---- naming a note, on request ----
